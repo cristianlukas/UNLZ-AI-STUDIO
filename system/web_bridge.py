@@ -30,6 +30,11 @@ try:
 except Exception:
     PyPDF2 = None
 
+try:
+    import cv2
+except Exception:
+    cv2 = None
+
 BASE_DIR = Path(__file__).resolve().parent
 INSTALLED_MODULES_FILE = BASE_DIR / "installed_modules.json"
 FAVORITES_FILE = BASE_DIR / "favorites_modules.json"
@@ -93,6 +98,7 @@ MLSHARP_OUTPUT_DIR = BASE_DIR / "ml-sharp-out"
 MLSHARP_VIEWER_TEMPLATE = BASE_DIR / "modules" / "ml_sharp" / "viewer_template.html"
 MODEL3D_DATA_DIR = BASE_DIR / "data" / "model_3d"
 MODEL3D_CONFIG_PATH = MODEL3D_DATA_DIR / "config.json"
+MODEL3D_SCRIPT_DIR = LOG_DIR / "generated_scripts" / "model3d"
 MODEL3D_OUTPUT_BASE = BASE_DIR.parent / "system" / "3d-out"
 MODEL3D_BACKENDS_DIR = BASE_DIR / "3d-backends"
 MODEL3D_WEIGHTS_DIR = BASE_DIR / "3d-weights"
@@ -115,6 +121,7 @@ KLEIN_DATA_DIR.mkdir(parents=True, exist_ok=True)
 KLEIN_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 MLSHARP_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 MODEL3D_DATA_DIR.mkdir(parents=True, exist_ok=True)
+MODEL3D_SCRIPT_DIR.mkdir(parents=True, exist_ok=True)
 MODEL3D_OUTPUT_BASE.mkdir(parents=True, exist_ok=True)
 MODEL3D_BACKENDS_DIR.mkdir(parents=True, exist_ok=True)
 MODEL3D_WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -146,6 +153,20 @@ def _tail_log(name: str, lines: int = 200) -> List[str]:
         return data[-lines:]
     except Exception:
         return []
+
+
+def _probe_optional_http(url: str, timeout_s: float = 0.8) -> str:
+    """Returns: up | down | disabled"""
+    target = (url or "").strip()
+    if not target:
+        return "disabled"
+    try:
+        r = httpx.get(target, timeout=timeout_s)
+        if 200 <= r.status_code < 500:
+            return "up"
+        return "down"
+    except Exception:
+        return "down"
 
 
 def _run_cmd(key: str, cmd: List[str], cwd: Optional[Path] = None, env: Optional[Dict] = None) -> None:
@@ -205,6 +226,59 @@ def _run_cmd_chain(key: str, commands: List[List[str]], cwd: Optional[Path] = No
                 _append_log(key, f"[done] exit={rc}")
                 if rc != 0:
                     break
+        except Exception as exc:
+            _append_log(key, f"[error] {exc}")
+        finally:
+            with MODULE_PROC_LOCK:
+                MODULE_PROCS.pop(key, None)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def _run_cmd_chain_with_marker(
+    key: str,
+    commands: List[List[str]],
+    cwd: Optional[Path] = None,
+    env: Optional[Dict] = None,
+    marker: Optional[Path] = None,
+) -> None:
+    def worker():
+        rc = 0
+        if marker is not None:
+            try:
+                if marker.exists():
+                    marker.unlink()
+            except Exception:
+                pass
+        try:
+            with MODULE_PROC_LOCK:
+                MODULE_PROCS.pop(key, None)
+            for cmd in commands:
+                _append_log(key, f"$ {' '.join(cmd)}")
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=str(cwd) if cwd else None,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+                    env=env,
+                )
+                with MODULE_PROC_LOCK:
+                    MODULE_PROCS[key] = proc
+                if proc.stdout:
+                    for line in proc.stdout:
+                        _append_log(key, line.rstrip())
+                proc.wait()
+                rc = proc.returncode
+                _append_log(key, f"[done] exit={rc}")
+                if rc != 0:
+                    break
+            if rc == 0 and marker is not None:
+                try:
+                    marker.write_text("ok", encoding="utf-8")
+                except Exception:
+                    pass
         except Exception as exc:
             _append_log(key, f"[error] {exc}")
         finally:
@@ -781,8 +855,72 @@ def _model3d_is_weights_installed(key: str) -> bool:
     return local_dir.exists()
 
 
+MODEL3D_VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
+
+
+def _model3d_is_video_file(path: str) -> bool:
+    try:
+        return Path(path).suffix.lower() in MODEL3D_VIDEO_EXTENSIONS
+    except Exception:
+        return False
+
+
+def _model3d_extract_keyframe(video_path: Path, temp_dir: Path) -> Path:
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    out_path = temp_dir / f"{video_path.stem}_frame_{int(time.time() * 1000)}.png"
+
+    if cv2 is not None:
+        cap = None
+        try:
+            cap = cv2.VideoCapture(str(video_path))
+            ok, frame = cap.read()
+            if ok and frame is not None:
+                cv2.imwrite(str(out_path), frame)
+                if out_path.exists():
+                    return out_path
+        except Exception:
+            pass
+        finally:
+            try:
+                if cap is not None:
+                    cap.release()
+            except Exception:
+                pass
+
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg:
+        cmd = [
+            ffmpeg,
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(video_path),
+            "-frames:v",
+            "1",
+            str(out_path),
+        ]
+        try:
+            proc = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+            )
+            if proc.returncode == 0 and out_path.exists():
+                return out_path
+        except Exception:
+            pass
+
+    raise RuntimeError(
+        "No se pudo extraer un frame del video. Instale opencv-python o ffmpeg para habilitar input_mode=video."
+    )
+
+
 def _model3d_write_stepx1_script(input_path: str, output_dir: str, repo_path: Path) -> Path:
-    script_path = MODEL3D_DATA_DIR / "stepx1_run.py"
+    script_path = MODEL3D_SCRIPT_DIR / "stepx1_run.py"
     weights_dir = MODEL3D_WEIGHTS_DIR / "Step1X-3D"
     script = (
         "import os\n"
@@ -820,7 +958,7 @@ def _model3d_write_hunyuan_script(
     repo_path: Path,
     enable_texture: bool = False,
 ) -> Path:
-    script_path = MODEL3D_DATA_DIR / "hunyuan_run.py"
+    script_path = MODEL3D_SCRIPT_DIR / "hunyuan_run.py"
     weights_dir = MODEL3D_WEIGHTS_DIR / "Hunyuan3D-2"
     texture_mode_line = (
         "os.environ[\"HUNYUAN_FORCE_TEXTURE\"] = \"1\"\n"
@@ -930,7 +1068,7 @@ def _model3d_write_hunyuan_script(
 
 
 def _model3d_write_sam3d_script(image_path: str, mask_path: str, output_dir: str, repo_path: Path) -> Path:
-    script_path = MODEL3D_DATA_DIR / "sam3d_run.py"
+    script_path = MODEL3D_SCRIPT_DIR / "sam3d_run.py"
     script = (
         "import os\n"
         "import sys\n"
@@ -1604,7 +1742,30 @@ class FinetuneRun(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"ok": True}
+    vectordb_status = _probe_optional_http(os.getenv("VECTORDB_HEALTH_URL", ""))
+    n8n_status = _probe_optional_http(os.getenv("N8N_HEALTH_URL", ""))
+    mcp_status = _probe_optional_http(os.getenv("MCP_HEALTH_URL", ""))
+    llm_status = "up"
+
+    components = {
+        "llm": {"status": llm_status, "required": True},
+        "vectordb": {"status": vectordb_status, "required": False},
+        "n8n": {"status": n8n_status, "required": False},
+        "mcp": {"status": mcp_status, "required": False},
+    }
+
+    overall = "healthy" if llm_status == "up" else "degraded"
+    return {
+        "ok": overall == "healthy",
+        "status": overall,
+        "state": "ok" if overall == "healthy" else "degraded",
+        "components": components,
+        "llm": llm_status,
+        "vectordb": vectordb_status,
+        "n8n": n8n_status,
+        "mcp": mcp_status,
+        "ts": int(time.time()),
+    }
 
 
 @app.get("/bootstrap")
@@ -1977,19 +2138,15 @@ def hymotion_deps():
     python_path = sys.executable.replace("pythonw.exe", "python.exe")
     install_req_path = _prepare_hymotion_requirements(req_path)
 
-    def worker():
-        _run_cmd("hy_motion", [python_path, "-m", "pip", "install", "--only-binary=:all:", "PyYAML==6.0.2"], cwd=backend_dir.parent)
-        while _is_running("hy_motion"):
-            time.sleep(0.5)
-        _run_cmd("hy_motion", [python_path, "-m", "pip", "install", "-r", str(install_req_path)], cwd=backend_dir)
-        while _is_running("hy_motion"):
-            time.sleep(0.5)
-        try:
-            (backend_dir / ".deps_installed").write_text("ok", encoding="utf-8")
-        except Exception:
-            pass
-
-    threading.Thread(target=worker, daemon=True).start()
+    _run_cmd_chain_with_marker(
+        "hy_motion",
+        [
+            [python_path, "-m", "pip", "install", "--only-binary=:all:", "PyYAML==6.0.2"],
+            [python_path, "-m", "pip", "install", "-r", str(install_req_path)],
+        ],
+        cwd=backend_dir,
+        marker=backend_dir / ".deps_installed",
+    )
     return {"ok": True}
 
 
@@ -2585,19 +2742,15 @@ def mlsharp_deps():
         raise HTTPException(status_code=404, detail="requirements.txt not found")
     python_path = sys.executable.replace("pythonw.exe", "python.exe")
 
-    def worker():
-        _run_cmd("ml_sharp", [python_path, "-m", "pip", "install", "-r", str(req_path)], cwd=MLSHARP_BACKEND_DIR)
-        while _is_running("ml_sharp"):
-            time.sleep(0.5)
-        _run_cmd("ml_sharp", [python_path, "-m", "pip", "install", "-e", str(MLSHARP_BACKEND_DIR)], cwd=MLSHARP_BACKEND_DIR)
-        while _is_running("ml_sharp"):
-            time.sleep(0.5)
-        try:
-            (MLSHARP_BACKEND_DIR / ".deps_installed").write_text("ok", encoding="utf-8")
-        except Exception:
-            pass
-
-    threading.Thread(target=worker, daemon=True).start()
+    _run_cmd_chain_with_marker(
+        "ml_sharp",
+        [
+            [python_path, "-m", "pip", "install", "-r", str(req_path)],
+            [python_path, "-m", "pip", "install", "-e", str(MLSHARP_BACKEND_DIR)],
+        ],
+        cwd=MLSHARP_BACKEND_DIR,
+        marker=MLSHARP_BACKEND_DIR / ".deps_installed",
+    )
     return {"ok": True}
 
 
@@ -2767,6 +2920,9 @@ def model3d_uninstall_weights(payload: Model3DWeights):
 def model3d_run(payload: Model3DRun):
     backend = payload.backend_key
     input_paths = payload.input_paths
+    input_mode = str(payload.input_mode or "single").strip().lower()
+    if input_mode not in {"single", "multi", "video"}:
+        input_mode = "single"
     if backend in ("stepx1", "hunyuan3d2", "sam3d") and not _model3d_is_backend_installed(backend):
         raise HTTPException(status_code=404, detail="Backend not installed")
     if backend == "reconv":
@@ -2776,6 +2932,21 @@ def model3d_run(payload: Model3DRun):
         raise HTTPException(status_code=400, detail="Input paths required")
     output_dir = payload.output_dir or str(MODEL3D_OUTPUT_BASE / f"model3d_{int(time.time())}")
     Path(output_dir).mkdir(parents=True, exist_ok=True)
+    resolved_inputs = [str(Path(p)) for p in input_paths]
+    if input_mode == "video" or (len(resolved_inputs) == 1 and _model3d_is_video_file(resolved_inputs[0])):
+        if backend == "sam3d":
+            raise HTTPException(status_code=400, detail="sam3d requiere imagen + máscara, no video directo")
+        video_path = Path(resolved_inputs[0])
+        if not video_path.exists():
+            raise HTTPException(status_code=400, detail="Video input not found")
+        try:
+            extracted = _model3d_extract_keyframe(video_path, Path(output_dir) / "_frames")
+            _append_log("model3d", f"[video] extracted keyframe: {extracted}")
+            resolved_inputs = [str(extracted)]
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    input_paths = resolved_inputs
+
     python_path = sys.executable.replace("pythonw.exe", "python.exe")
     repo_path = _model3d_repo_path(backend)
     config = _model3d_load_config()
@@ -2803,7 +2974,7 @@ def model3d_run(payload: Model3DRun):
     _run_cmd("model3d", [python_path, str(script_path)], cwd=repo_path)
     config["last_output_dir"] = output_dir
     _model3d_save_config(config)
-    return {"ok": True, "output_dir": output_dir}
+    return {"ok": True, "output_dir": output_dir, "resolved_inputs": input_paths, "input_mode": input_mode}
 
 
 @app.post("/modules/model_3d/open_output")

@@ -119,8 +119,32 @@ python -m pip install -U fastapi uvicorn httpx psutil python-multipart faster-wh
   lmdeploy huggingface_hub transformers accelerate pillow requests ^
   customtkinter flask flask-socketio SpeechRecognition pyaudio
 
-echo Instalando PyTorch (CUDA 12.1)...
-python -m pip install --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio
+for /f "tokens=2" %%v in ('python -V 2^>^&1') do set "PY_VER=%%v"
+set "PY_VER=%PY_VER:~0,4%"
+echo Python detectado: %PY_VER%
+if "%PY_VER%"=="3.13" (
+  echo [WARN] Python 3.13 puede fallar con algunos backends ^(lmdeploy/vision^). Recomendado: Python 3.11 o 3.12.
+)
+
+if "%TORCH_CUDA_TAG%"=="" set "TORCH_CUDA_TAG=cu126"
+if "%TORCH_INDEX_URL%"=="" set "TORCH_INDEX_URL=https://download.pytorch.org/whl/%TORCH_CUDA_TAG%"
+
+echo Instalando PyTorch (%TORCH_CUDA_TAG%)...
+python -m pip install --index-url "%TORCH_INDEX_URL%" torch torchvision torchaudio
+if errorlevel 1 (
+  echo [ERROR] Fallo la instalacion de torch con %TORCH_INDEX_URL%.
+  echo Revisar driver CUDA y compatibilidad de wheels.
+  exit /b 1
+)
+
+echo Verificando Torch/CUDA...
+python -c "import torch; print('torch=',torch.__version__,' cuda_runtime=',torch.version.cuda,' cuda_available=',torch.cuda.is_available())"
+python -c "import sys, torch; sys.exit(0 if torch.cuda.is_available() else 1)"
+if errorlevel 1 (
+  echo [WARN] Torch quedo en CPU ^(cuda_available=False^).
+  echo [WARN] Reinstala con:
+  echo        python -m pip install --index-url https://download.pytorch.org/whl/cu126 torch torchvision torchaudio
+)
 
 if exist "system\\web_ui\\package.json" (
   echo Instalando dependencias Web UI...

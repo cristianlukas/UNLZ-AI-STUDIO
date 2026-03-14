@@ -1,0 +1,23 @@
+{
+  "profile_key": "baja",
+  "system": {
+    "python_version": "3.12.9",
+    "platform": "Windows 11",
+    "cpu_name": "AMD Ryzen 7 7700 8-Core Processor",
+    "cpu_threads": 16,
+    "ram_gb": 127.08,
+    "gpu_count": 1,
+    "gpu_names": [
+      "NVIDIA GeForce RTX 3090"
+    ],
+    "vram_gb_per_gpu": [
+      24.0
+    ],
+    "cuda_available": true
+  },
+  "ts": 1773511297.9620142,
+  "auto_selected": true,
+  "custom_overrides": {},
+  "endpoint_config": {},
+  "endpoint_settings": {}
+}

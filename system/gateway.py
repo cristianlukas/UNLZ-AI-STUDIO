@@ -28,7 +28,7 @@ from huggingface_hub import snapshot_download
 import asyncio
 from fastapi.responses import StreamingResponse
 from runtime_profiles import detect_system_info, ProfileManager, run_dependency_checks
-from studio_gui import start_gui_thread
+from studio_gui_old import start_gui_thread
 
 # --- Logs y TMP dirs (deben existir antes de usarlos) ---
 LOG_DIR = Path("logs")
@@ -654,6 +654,20 @@ def _wait_port_open(host: str, port: int, timeout: float) -> bool:
                 time.sleep(0.25)
     return False
 
+
+def _probe_optional_http(url: str, timeout_s: float = 0.8) -> str:
+    """Returns: up | down | disabled"""
+    target = (url or "").strip()
+    if not target:
+        return "disabled"
+    try:
+        r = requests.get(target, timeout=timeout_s)
+        if 200 <= r.status_code < 500:
+            return "up"
+        return "down"
+    except Exception:
+        return "down"
+
 import threading
 
 class GpuProcessManager:
@@ -882,8 +896,18 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print("[startup] VLM warm-up skipped:", e)
 
-    yield
-    await _httpx_async_client.aclose()
+    try:
+        yield
+    finally:
+        print("[fastapi] shutdown -> stopping children …")
+        try:
+            manager.stop()
+        except Exception:
+            pass
+        _kill_orphans()
+        _kill_by_port(LLAMA_PORT)
+        _kill_by_port(VLM_PORT)
+        await _httpx_async_client.aclose()
 
 
 app = FastAPI(title="IA Gateway (LLM/VLM/ALM)", lifespan=lifespan)
@@ -908,14 +932,6 @@ def _at_exit():
     try: manager.stop()
     except: pass
     # also clean any that escaped
-    _kill_orphans()
-    _kill_by_port(LLAMA_PORT)
-    _kill_by_port(VLM_PORT)
-
-@app.on_event("shutdown")
-def _on_shutdown():
-    print("[fastapi] shutdown -> stopping children …")
-    manager.stop()
     _kill_orphans()
     _kill_by_port(LLAMA_PORT)
     _kill_by_port(VLM_PORT)
@@ -1292,7 +1308,35 @@ async def slm_pipeline(
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "mode": manager.mode}
+    vectordb_status = _probe_optional_http(os.getenv("VECTORDB_HEALTH_URL", ""))
+    n8n_status = _probe_optional_http(os.getenv("N8N_HEALTH_URL", ""))
+    mcp_status = _probe_optional_http(os.getenv("MCP_HEALTH_URL", ""))
+    llm_status = "up"
+
+    components = {
+        "llm": {"status": llm_status, "required": True},
+        "vectordb": {"status": vectordb_status, "required": False},
+        "n8n": {"status": n8n_status, "required": False},
+        "mcp": {"status": mcp_status, "required": False},
+    }
+
+    overall = "healthy"
+    if components["llm"]["status"] != "up":
+        overall = "degraded"
+
+    # Backward + forward compatible payload for external dashboards.
+    return {
+        "ok": overall == "healthy",
+        "status": overall,
+        "state": "ok" if overall == "healthy" else "degraded",
+        "mode": manager.mode,
+        "components": components,
+        "llm": llm_status,
+        "vectordb": vectordb_status,
+        "n8n": n8n_status,
+        "mcp": mcp_status,
+        "ts": int(time.time()),
+    }
 
 if __name__ == "__main__":
     try:

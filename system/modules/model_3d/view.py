@@ -80,6 +80,8 @@ class Model3DView(ctk.CTkFrame):
         self.data_dir = self.system_root / "data" / "model_3d"
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.config_path = self.data_dir / "config.json"
+        self.generated_script_dir = self.system_root / "logs" / "generated_scripts" / "model3d"
+        self.generated_script_dir.mkdir(parents=True, exist_ok=True)
 
         self.output_base = self.system_root / "3d-out"
         self.output_base.mkdir(parents=True, exist_ok=True)
@@ -571,7 +573,7 @@ class Model3DView(ctk.CTkFrame):
             self.after(0, lambda: self.generate_button.configure(state="normal"))
 
     def write_stepx1_script(self, input_path, output_dir, repo_path):
-        script_path = self.data_dir / "stepx1_run.py"
+        script_path = self.generated_script_dir / "stepx1_run.py"
         script = (
             "import os\n"
             "import sys\n"
@@ -607,7 +609,7 @@ class Model3DView(ctk.CTkFrame):
         return str(script_path)
 
     def write_hunyuan_script(self, input_path, output_dir, repo_path, enable_texture):
-        script_path = self.data_dir / "hunyuan_run.py"
+        script_path = self.generated_script_dir / "hunyuan_run.py"
         texture_mode_line = (
             "os.environ[\"HUNYUAN_FORCE_TEXTURE\"] = \"1\"\n"
             if enable_texture
@@ -735,7 +737,7 @@ class Model3DView(ctk.CTkFrame):
         return False
 
     def write_sam3d_script(self, image_path, mask_path, output_dir, repo_path):
-        script_path = self.data_dir / "sam3d_run.py"
+        script_path = self.generated_script_dir / "sam3d_run.py"
         script = (
             "import os\n"
             "import sys\n"

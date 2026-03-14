@@ -28,7 +28,8 @@ Que la universidad pueda tener un servidor local donde docentes y estudiantes:
 ## Arquitectura (alto nivel)
 - `system/gateway.py`: orquestador principal para procesos de IA.
 - `system/process_manager.py`: arranque/parada de servicios y control de recursos.
-- `system/studio_gui.py`: GUI de escritorio (Tkinter).
+- `system/studio_gui.py`: GUI de escritorio principal (CustomTkinter).
+- `system/studio_gui_old.py`: GUI de monitor/runtime usada por `gateway.py`.
 - `system/web_bridge.py`: puente API para la Web UI.
 - `system/web_ui/`: interfaz Next.js.
 - `system/modules/`: módulos plug-and-play.
@@ -46,9 +47,10 @@ Que la universidad pueda tener un servidor local donde docentes y estudiantes:
 
 ## Requisitos
 - Windows 10/11.
-- Python 3.10+.
+- Python 3.11 o 3.12 (recomendado).
 - Node.js 18+ (solo si vas a usar la Web UI).
 - GPU NVIDIA recomendada (CUDA) para mejor rendimiento.
+- CUDA 12.6 recomendado para compatibilidad actual de módulos (también funciona 12.4/12.1).
 - `llama.cpp` si vas a usar backend GGUF con `llama-server`.
 
 ---
@@ -68,7 +70,8 @@ winget install llama.cpp
 # Python runtime
 pip install -U fastapi uvicorn httpx psutil python-multipart faster-whisper
 pip install -U lmdeploy
-pip install --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio
+# recomendado: CUDA 12.6
+pip install --index-url https://download.pytorch.org/whl/cu126 torch torchvision torchaudio
 pip install -U huggingface_hub transformers accelerate pillow requests
 
 # GUI y modulos
@@ -249,8 +252,24 @@ Los módulos se instalan desde la GUI o la Web UI. Código en `system/modules/`.
 ## Troubleshooting rápido
 - No aparecen modelos: verificá rutas y extensiones `.gguf`.
 - Fallos de GPU: reduce modelo o perfil, revisá VRAM disponible.
+- `torch.cuda.is_available() = False` con GPU instalada: reinstalá torch con wheel CUDA, por ejemplo:
+  `python -m pip install --index-url https://download.pytorch.org/whl/cu126 torch torchvision torchaudio`
 - Web UI no responde: asegurate de tener `web_bridge.py` corriendo.
 - Errores de arranque: revisar `system/logs/startup.log`.
+
+---
+
+## Matriz recomendada (testers)
+
+| Perfil de entorno | Estado sugerido |
+|---|---|
+| Python 3.11 + CUDA 12.6 + torch cu126 | Recomendado |
+| Python 3.12 + CUDA 12.6 + torch cu126 | Recomendado (validar lmdeploy según versión) |
+| Python 3.13 | No recomendado por incompatibilidades en algunos módulos |
+
+Notas:
+- En equipos tipo RTX 2060 + 32 GB RAM conviene usar perfil `baja` o `personalizado` autoconfigurado.
+- Si cambiás versión de torch, verificá siempre el runtime: `python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"`.
 
 ---
 

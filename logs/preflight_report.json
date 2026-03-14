@@ -1,0 +1,24 @@
+{
+  "warnings": [],
+  "suggestions": [
+    "lmdeploy 0.9.2 en Python 3.12 puede fallar según backend. Si hay errores, use Python 3.11 o actualice lmdeploy.",
+    "Referencia estable de entorno: Python 3.11/3.12 + CUDA 12.6 + wheels de torch para cu126.",
+    "Verifique que las rutas de modelos en C:\\models contengan las variantes 30B, 14B y 7B en formato GGUF."
+  ],
+  "details": {
+    "python_version": "3.12.9",
+    "torch_version": "2.6.0+cu124",
+    "torchvision_version": "0.21.0+cu124",
+    "torchaudio_version": "2.8.0",
+    "lmdeploy_version": "0.9.2",
+    "cuda_available": true,
+    "gpu_names": [
+      "NVIDIA GeForce RTX 3090"
+    ],
+    "vram_gb_per_gpu": [
+      24.0
+    ],
+    "torch_cuda_runtime": "12.4"
+  },
+  "ts": 1773511360.223622
+}

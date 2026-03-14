@@ -14,6 +14,8 @@ import shutil
 import threading
 import time
 import subprocess
+import re
+import importlib.metadata
 from dataclasses import asdict, dataclass
 from copy import deepcopy
 from pathlib import Path
@@ -880,9 +882,262 @@ class ProfileManager:
         return True, msg
 
     def _load_feedback(self) -> List[Dict[str, Any]]:
-        # Placeholder for loading feedback from jsonl
-        return []
+        if not self._feedback_path.exists():
+            return []
+        rows: List[Dict[str, Any]] = []
+        try:
+            for raw_line in self._feedback_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(payload, dict):
+                    rows.append(payload)
+        except Exception:
+            return []
+        return rows
 
     def _apply_feedback_heuristics(self, candidates: List[ProfilePreset], feedback: List[Dict[str, Any]]) -> ProfilePreset:
-        # Placeholder for future logic
-        return candidates[0]
+        if not feedback:
+            return candidates[0]
+        issue_weight = {
+            "ok": 0.0,
+            "slow": 1.0,
+            "latency": 1.0,
+            "cpu": 1.0,
+            "oom": 2.0,
+            "freeze": 2.5,
+            "crash": 3.0,
+        }
+        penalty_by_profile: Dict[str, float] = {}
+        for item in feedback:
+            if not isinstance(item, dict):
+                continue
+            profile_key = str(item.get("profile_key", "")).strip()
+            if not profile_key:
+                continue
+            issue = str(item.get("issue", "ok")).strip().lower()
+            penalty_by_profile[profile_key] = penalty_by_profile.get(profile_key, 0.0) + issue_weight.get(issue, 1.0)
+
+        ranked = sorted(
+            candidates,
+            key=lambda preset: (penalty_by_profile.get(preset.key, 0.0), -preset.priority),
+        )
+        return ranked[0]
+
+    def autoconfigure_custom(self) -> Dict[str, object]:
+        """
+        Fill custom settings from current hardware and available models.
+        Keeps endpoint-level tuning untouched.
+        """
+        preferred = self._best_non_custom_preset()
+        launch = self._derive_launch_settings(preferred)
+        chosen_model = Path(launch["model_path"])
+        if not chosen_model.exists():
+            for model_key in ("qwen3-coder-30b-q5", "qwen3-coder-14b-q4", "qwen2.5-coder-7b-q4"):
+                candidate = self.resolve_model_path(model_key)
+                if candidate.exists():
+                    chosen_model = candidate
+                    break
+        chosen_model_str = str(chosen_model)
+        if chosen_model_str == ".":
+            chosen_model_str = ""
+
+        vram = self.system_info.vram_gb_per_gpu[0] if self.system_info.vram_gb_per_gpu else 0.0
+        cfg = self.get_custom_settings()
+        cfg.update(
+            {
+                "model_path": chosen_model_str,
+                "ctx_size": int(launch.get("ctx_size", cfg["ctx_size"])),
+                "threads": int(launch.get("threads", cfg["threads"])),
+                "n_gpu_layers": int(launch.get("n_gpu_layers", cfg["n_gpu_layers"])),
+                "batch_size": int(launch.get("batch_size", cfg["batch_size"])),
+                # Helps stability on GPUs with limited VRAM while preserving user override after save.
+                "flash_attn": bool(vram >= 8.0),
+            }
+        )
+        self._custom_config = cfg
+        self._persist_state()
+        self._pending_restarts.add("llm")
+        return self.get_custom_settings()
+
+    def append_feedback(self, profile_key: str, notes: str, issue: str = "ok") -> None:
+        payload = {
+            "ts": time.time(),
+            "profile_key": str(profile_key or "").strip() or self.active_profile.key,
+            "issue": str(issue or "ok").strip().lower(),
+            "notes": str(notes or "").strip(),
+            "system": {
+                "cpu_threads": self.system_info.cpu_threads,
+                "ram_gb": self.system_info.ram_gb,
+                "gpu": (self.system_info.gpu_names[0] if self.system_info.gpu_names else ""),
+                "vram_gb": (self.system_info.vram_gb_per_gpu[0] if self.system_info.vram_gb_per_gpu else 0.0),
+            },
+        }
+        self._feedback_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._feedback_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+    def get_feedback_summary(self) -> Dict[str, int]:
+        rows = self._load_feedback()
+        summary: Dict[str, int] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            issue = str(row.get("issue", "ok")).strip().lower() or "ok"
+            summary[issue] = summary.get(issue, 0) + 1
+        summary["total"] = len(rows)
+        return summary
+
+    def consume_restart_flag(self, mode: str) -> bool:
+        """
+        Consume a pending restart flag for the given runtime mode.
+
+        Mode aliases:
+        - llm/clm/alm/slm -> llm
+        - vlm -> vlm
+        """
+        normalized = (mode or "").strip().lower()
+        if normalized in {"clm", "alm", "slm"}:
+            normalized = "llm"
+        with self._lock:
+            if normalized in self._pending_restarts:
+                self._pending_restarts.discard(normalized)
+                return True
+            return False
+
+    def describe_active_profile(self) -> Dict[str, str]:
+        preset = self.active_profile
+        if preset.user_configurable:
+            settings = self.get_custom_settings()
+            model_path = str(settings.get("model_path", ""))
+            ctx_size = int(settings.get("ctx_size", 2048))
+            threads = int(settings.get("threads", 8))
+            n_gpu_layers = int(settings.get("n_gpu_layers", 0))
+            batch_size = int(settings.get("batch_size", 4))
+        else:
+            launch = self._derive_launch_settings(preset)
+            model_path = str(launch["model_path"])
+            ctx_size = int(launch["ctx_size"])
+            threads = int(launch["threads"])
+            n_gpu_layers = int(launch["n_gpu_layers"])
+            batch_size = int(launch["batch_size"])
+        return {
+            "key": preset.key,
+            "title": preset.title,
+            "model": model_path,
+            "ctx_size": str(ctx_size),
+            "threads": str(threads),
+            "n_gpu_layers": str(n_gpu_layers),
+            "batch_size": str(batch_size),
+        }
+
+
+def _safe_pkg_version(name: str) -> str:
+    try:
+        return importlib.metadata.version(name)
+    except Exception:
+        return ""
+
+
+def _version_tuple(text: str) -> Tuple[int, ...]:
+    nums = [int(x) for x in re.findall(r"\d+", text or "")]
+    return tuple(nums) if nums else (0,)
+
+
+def run_dependency_checks(system_info: SystemInfo, log_dir: Path) -> Dict[str, Any]:
+    """
+    Lightweight preflight checks used by gateway.py.
+    Returns a report with warnings/suggestions but does not raise.
+    """
+    warnings: List[str] = []
+    suggestions: List[str] = []
+    details: Dict[str, Any] = {}
+
+    py_ver = system_info.python_version
+    py_tuple = _version_tuple(py_ver)
+    torch_ver = _safe_pkg_version("torch")
+    torchvision_ver = _safe_pkg_version("torchvision")
+    torchaudio_ver = _safe_pkg_version("torchaudio")
+    lmdeploy_ver = _safe_pkg_version("lmdeploy")
+
+    details["python_version"] = py_ver
+    details["torch_version"] = torch_ver
+    details["torchvision_version"] = torchvision_ver
+    details["torchaudio_version"] = torchaudio_ver
+    details["lmdeploy_version"] = lmdeploy_ver
+    details["cuda_available"] = bool(system_info.cuda_available)
+    details["gpu_names"] = list(system_info.gpu_names)
+    details["vram_gb_per_gpu"] = list(system_info.vram_gb_per_gpu)
+
+    if py_tuple < (3, 11):
+        warnings.append("Python < 3.11 tiene más incompatibilidades en dependencias de IA. Recomendado: 3.11 o 3.12.")
+    elif py_tuple >= (3, 13):
+        warnings.append("Python 3.13 puede generar incompatibilidades con varios backends. Recomendado: 3.11 o 3.12.")
+    elif py_tuple >= (3, 12) and lmdeploy_ver and _version_tuple(lmdeploy_ver) < (0, 10):
+        suggestions.append(
+            f"lmdeploy {lmdeploy_ver} en Python 3.12 puede fallar según backend. "
+            "Si hay errores, use Python 3.11 o actualice lmdeploy."
+        )
+
+    if not torch_ver:
+        warnings.append("torch no está instalado en el entorno activo.")
+        suggestions.append("Instale torch/torchvision/torchaudio con una build CUDA compatible con su driver.")
+    elif system_info.gpu_count > 0 and not system_info.cuda_available:
+        warnings.append("Se detectó GPU pero torch no está usando CUDA (torch.cuda.is_available() = False).")
+        suggestions.append(
+            "Reinstale torch con wheel CUDA (por ejemplo cu126) y verifique con: "
+            "python -c \"import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())\""
+        )
+    elif torch_ver:
+        torch_cuda_runtime = ""
+        try:
+            import torch as _torch_check
+
+            torch_cuda_runtime = str(_torch_check.version.cuda or "")
+        except Exception:
+            torch_cuda_runtime = ""
+        details["torch_cuda_runtime"] = torch_cuda_runtime
+        if torch_cuda_runtime:
+            if not torch_cuda_runtime.startswith(("12.6", "12.4", "12.1")):
+                suggestions.append(
+                    f"CUDA runtime detectado en torch: {torch_cuda_runtime}. "
+                    "Para este proyecto se recomienda 12.6 (también funciona 12.4/12.1)."
+                )
+        elif system_info.gpu_count > 0:
+            warnings.append(
+                "torch instalado sin runtime CUDA detectado (torch.version.cuda vacío). "
+                "Probable wheel CPU-only."
+            )
+
+    suggestions.append(
+        "Referencia estable de entorno: Python 3.11/3.12 + CUDA 12.6 + wheels de torch para cu126."
+    )
+
+    model_dir = Path(os.environ.get("LLAMA_MODEL_DIR", r"C:\models"))
+    expected = [
+        model_dir / "qwen3-coder-30b",
+        model_dir / "qwen3-coder-14b",
+        model_dir / "qwen2.5-coder-7b",
+    ]
+    missing = [str(p) for p in expected if not p.exists()]
+    if missing:
+        suggestions.append(
+            f"Verifique que las rutas de modelos en {model_dir} contengan las variantes 30B, 14B y 7B en formato GGUF."
+        )
+
+    report = {
+        "warnings": warnings,
+        "suggestions": suggestions,
+        "details": details,
+        "ts": time.time(),
+    }
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / "preflight_report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+    return report
