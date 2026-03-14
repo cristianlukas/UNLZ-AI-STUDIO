@@ -17,6 +17,7 @@ export default function ProEditPage() {
         <div className="eyebrow">{translations.proedit_title || "ProEdit"}</div>
         <h1>{translations.proedit_title || "ProEdit"}</h1>
         <p>{translations.proedit_subtitle || "Advanced editing toolkit."}</p>
+        <p>{translations.proedit_plain || "Advanced editing to improve images or video."}</p>
       </div>
 
       <section className="panel">

@@ -47,6 +47,16 @@ from modules.klein import KleinModule
 from modules.hyworld import HYWorldModule
 from modules.cyberscraper import CyberScraperModule
 from modules.ml_sharp import MLSharpModule
+from modules.viga import VigaModule
+from modules.videomama import VideoMamaModule
+from modules.luxtts import LuxTTSModule
+from modules.vibevoice_asr import VibeVoiceASRModule
+from modules.frankenmotion import FrankenMotionModule
+from modules.flowact_r1 import FlowActR1Module
+from modules.omni_transfer import OmniTransferModule
+from modules.qwen3_tts import Qwen3TTSModule
+from modules.lightonocr import LightOnOCRModule
+from modules.personaplex import PersonaPlexModule
 
 # Set Theme
 THEME_PATH = os.path.join(os.path.dirname(__file__), "assets", "themes", "ingenieria.json")
@@ -310,6 +320,66 @@ class StudioGUI(ctk.CTk):
                 "title_key": "mod_neutts_title",
                 "desc_key": "mod_neutts_desc",
                 "icon": "TTS"
+            },
+            "viga": {
+                "class": VigaModule,
+                "title_key": "mod_viga_title",
+                "desc_key": "mod_viga_desc",
+                "icon": "VG"
+            },
+            "videomama": {
+                "class": VideoMamaModule,
+                "title_key": "mod_videomama_title",
+                "desc_key": "mod_videomama_desc",
+                "icon": "VM"
+            },
+            "luxtts": {
+                "class": LuxTTSModule,
+                "title_key": "mod_luxtts_title",
+                "desc_key": "mod_luxtts_desc",
+                "icon": "LX"
+            },
+            "vibevoice_asr": {
+                "class": VibeVoiceASRModule,
+                "title_key": "mod_vibevoice_asr_title",
+                "desc_key": "mod_vibevoice_asr_desc",
+                "icon": "ASR"
+            },
+            "frankenmotion": {
+                "class": FrankenMotionModule,
+                "title_key": "mod_frankenmotion_title",
+                "desc_key": "mod_frankenmotion_desc",
+                "icon": "FM"
+            },
+            "flowact_r1": {
+                "class": FlowActR1Module,
+                "title_key": "mod_flowact_r1_title",
+                "desc_key": "mod_flowact_r1_desc",
+                "icon": "FA"
+            },
+            "omni_transfer": {
+                "class": OmniTransferModule,
+                "title_key": "mod_omni_transfer_title",
+                "desc_key": "mod_omni_transfer_desc",
+                "icon": "OT"
+            },
+            "qwen3_tts": {
+                "class": Qwen3TTSModule,
+                "title_key": "mod_qwen3_tts_title",
+                "desc_key": "mod_qwen3_tts_desc",
+                "icon": "QT"
+            },
+            "lightonocr": {
+                "class": LightOnOCRModule,
+                "title_key": "mod_lightonocr_title",
+                "desc_key": "mod_lightonocr_desc",
+                "icon": "LO"
+            },
+            "personaplex": {
+                "class": PersonaPlexModule,
+                "title_key": "mod_personaplex_title",
+                "desc_key": "mod_personaplex_desc",
+                "icon": "PP"
             }
         }
         

@@ -57,6 +57,11 @@ export default function NeuttsPage() {
     setLogs(data.lines);
   };
 
+  const clearLogs = async () => {
+    await fetchJson("/modules/neutts/clear_logs", { method: "POST" });
+    setLogs([]);
+  };
+
   useEffect(() => {
     refresh();
     refreshLogs();
@@ -113,6 +118,7 @@ export default function NeuttsPage() {
         <div className="eyebrow">{translations.neutts_title || "NeuTTS"}</div>
         <h1>{translations.neutts_title || "NeuTTS"}</h1>
         <p>{translations.neutts_subtitle || "Lightweight text-to-speech."}</p>
+        <p>{translations.neutts_plain || "Converts text to speech for narration or demos."}</p>
       </div>
       {state?.running && <div className="banner">{translations.status_in_progress || "En progreso"}</div>}
 
@@ -238,9 +244,12 @@ export default function NeuttsPage() {
       <section className="panel">
         <div className="panel-header">
           <h2>Logs</h2>
+          <button className="ghost" onClick={clearLogs}>
+            {translations.log_clear_btn || "Clear log"}
+          </button>
         </div>
         <div className="panel-body">
-          <pre className="empty">{logs.length ? logs.join("\n") : "No logs yet."}</pre>
+          <pre className="empty log-view">{logs.length ? logs.join("\n") : "No logs yet."}</pre>
         </div>
       </section>
     </AppShell>

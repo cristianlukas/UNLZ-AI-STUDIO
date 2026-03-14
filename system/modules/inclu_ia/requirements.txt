@@ -1,0 +1,5 @@
+flask
+flask-socketio
+faster-whisper
+SpeechRecognition
+numpy

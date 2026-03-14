@@ -68,6 +68,11 @@ export default function ResearchAssistantPage() {
     setLogs(data.lines);
   };
 
+  const clearLogs = async () => {
+    await fetchJson("/modules/research_assistant/clear_logs", { method: "POST" });
+    setLogs([]);
+  };
+
   useEffect(() => {
     refresh();
     refreshLogs();
@@ -195,6 +200,7 @@ export default function ResearchAssistantPage() {
         <div className="eyebrow">{translations.mod_research_title || "Research Assistant"}</div>
         <h1>{translations.mod_research_title || "Research Assistant"}</h1>
         <p>{translations.mod_research_desc || "Local bibliography manager with summaries and RAG."}</p>
+        <p>{translations.mod_research_plain || "Organizes PDFs and helps you find answers fast."}</p>
       </div>
 
       <section className="panel">
@@ -359,9 +365,12 @@ export default function ResearchAssistantPage() {
       <section className="panel">
         <div className="panel-header">
           <h2>Log</h2>
+          <button className="ghost" onClick={clearLogs}>
+            {translations.log_clear_btn || "Clear log"}
+          </button>
         </div>
         <div className="panel-body">
-          <pre className="empty">{logs.length ? logs.join("\n") : "No logs yet."}</pre>
+          <pre className="empty log-view">{logs.length ? logs.join("\n") : "No logs yet."}</pre>
         </div>
       </section>
     </AppShell>

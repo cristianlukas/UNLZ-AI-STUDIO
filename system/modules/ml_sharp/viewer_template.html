@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SharpSplat Viewer</title>
-    <script type="module" src="https://unpkg.com/@splat/viewer@1.0.0/dist/viewer.js"></script>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; }
         #canvas { width: 100vw; height: 100vh; display: block; }
@@ -28,12 +27,8 @@
         <p>Controls: Left Click to Rotate, Right Click to Pan, Scroll to Zoom</p>
     </div>
     
-    <!-- Using a generic viewer implementation. 
-         If this specific package doesn't exist, we will use a more robust one below. 
-         Actually, let's use a known working implementation script directly. -->
-    
     <script type="module">
-        import * as SPLAT from 'https://cdn.jsdelivr.net/npm/gsplat@latest/dist/gsplat.module.js';
+        import * as SPLAT from 'https://cdn.jsdelivr.net/npm/gsplat@1.2.9/dist/index.es.js';
 
         const canvas = document.createElement('canvas');
         document.body.appendChild(canvas);
@@ -44,18 +39,38 @@
         const controls = new SPLAT.OrbitControls(camera, canvas);
 
         async function main() {
-            // Load the .ply file
-            await SPLAT.Loader.LoadAsync('scene.ply', scene, (progress) => {
-                document.querySelector('#info p').textContent = `Loading: ${Math.round(progress * 100)}%`;
-            });
-            
-            document.querySelector('#info p').textContent = 'Scene Loaded';
+            const status = document.querySelector('#info p');
+            const url = new URL('scene.ply', window.location.href).toString();
+            try {
+                await SPLAT.PLYLoader.LoadAsync(url, scene, (progress) => {
+                    status.textContent = `Loading: ${Math.round(progress * 100)}%`;
+                });
+                const splat = scene.objects && scene.objects.length ? scene.objects[0] : null;
+                if (splat && splat.bounds) {
+                    const center = splat.bounds.center();
+                    const size = splat.bounds.size();
+                    const maxDim = Math.max(size.x, size.y, size.z);
+                    const distance = Math.max(maxDim * 2.5, 2);
+                    camera.position = new SPLAT.Vector3(center.x, center.y, center.z + distance);
+                    controls.setCameraTarget(center);
+                    controls.minZoom = Math.max(maxDim * 0.05, 0.05);
+                    controls.maxZoom = Math.max(maxDim * 20, 50);
+                }
+                status.textContent = 'Scene Loaded';
+            } catch (err) {
+                const errText = err?.message || String(err || 'Unknown error');
+                status.textContent = `Failed to load scene.ply: ${errText}`;
+                console.error('Viewer URL:', window.location.href);
+                console.error('PLY URL:', url);
+            }
 
             // Handle resize
             function onResize() {
                 renderer.setSize(window.innerWidth, window.innerHeight);
-                camera.aspect = window.innerWidth / window.innerHeight;
-                camera.updateProjectionMatrix();
+                if (camera.data && camera.data.setSize) {
+                    camera.data.setSize(window.innerWidth, window.innerHeight);
+                }
+                camera.update();
             }
             window.addEventListener('resize', onResize);
             onResize();

@@ -56,6 +56,7 @@ class MLSharpView(ctk.CTkFrame):
 
         ctk.CTkLabel(header, text=self.tr("mlsharp_title"), font=ctk.CTkFont(size=24, weight="bold")).pack(anchor="w")
         ctk.CTkLabel(header, text=self.tr("mlsharp_subtitle"), text_color="gray").pack(anchor="w")
+        ctk.CTkLabel(header, text=self.tr("mlsharp_plain"), text_color="gray").pack(anchor="w")
 
         actions = ctk.CTkFrame(self, fg_color="transparent")
         actions.pack(fill="x", padx=10, pady=(10, 5))
@@ -232,8 +233,27 @@ class MLSharpView(ctk.CTkFrame):
 
         def worker():
             code = self.run_command([python_path, "-m", "pip", "install", "-r", str(req_path)])
+            if code != 0:
+                self.safe_log("Retrying pip install with --user and force reinstall...")
+                code = self.run_command(
+                    [
+                        python_path,
+                        "-m",
+                        "pip",
+                        "install",
+                        "--user",
+                        "--upgrade",
+                        "--force-reinstall",
+                        "--no-cache-dir",
+                        "-r",
+                        str(req_path),
+                    ]
+                )
             if code == 0:
                 code = self.run_command([python_path, "-m", "pip", "install", "-e", str(self.backend_dir)])
+                if code != 0:
+                    self.safe_log("Retrying editable install with --user...")
+                    code = self.run_command([python_path, "-m", "pip", "install", "--user", "-e", str(self.backend_dir)])
             self.after(0, lambda: self.on_deps_done(code))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -272,6 +292,9 @@ class MLSharpView(ctk.CTkFrame):
             return
 
         cmd = [sharp_cmd, "predict", "-i", input_path, "-o", str(output_dir)]
+        checkpoint = self._get_checkpoint_path()
+        if checkpoint:
+            cmd.extend(["--checkpoint-path", str(checkpoint)])
         if self.render_var.get():
             cmd.append("--render")
 
@@ -283,6 +306,15 @@ class MLSharpView(ctk.CTkFrame):
         self.set_busy(True)
 
         threading.Thread(target=lambda: self.run_predict_worker(cmd, output_dir), daemon=True).start()
+
+    def _get_checkpoint_path(self):
+        model_path = Path.home() / ".cache" / "torch" / "hub" / "checkpoints" / "sharp_2572gikvuh.pt"
+        try:
+            if model_path.exists() and model_path.stat().st_size > 1024 * 1024:
+                return model_path
+        except Exception:
+            return None
+        return None
 
     def run_predict_worker(self, cmd, output_dir: Path):
         returncode = self.run_command(cmd)
@@ -444,6 +476,7 @@ class MLSharpView(ctk.CTkFrame):
             gaussians_dir.mkdir(parents=True, exist_ok=True)
             viewer_dst = gaussians_dir / "index.html"
             scene_dst = gaussians_dir / "scene.ply"
+            scene_full_dst = gaussians_dir / "scene_full.ply"
 
             ply_files = [f for f in output_dir.iterdir() if f.suffix == ".ply"]
             if not ply_files:
@@ -451,8 +484,13 @@ class MLSharpView(ctk.CTkFrame):
                 return
 
             src_ply = ply_files[0]
-            shutil.move(str(src_ply), str(scene_dst))
-            self.log(f"Moved {src_ply.name} to {scene_dst}")
+            shutil.move(str(src_ply), str(scene_full_dst))
+            self.log(f"Moved {src_ply.name} to {scene_full_dst}")
+            if self._simplify_ply_for_viewer(scene_full_dst, scene_dst):
+                self.log(f"Viewer PLY written to {scene_dst}")
+            else:
+                shutil.copy(str(scene_full_dst), str(scene_dst))
+                self.log("Viewer PLY fallback: copied full PLY.")
 
             if self.viewer_template.exists():
                 shutil.copy(str(self.viewer_template), str(viewer_dst))
@@ -465,6 +503,24 @@ class MLSharpView(ctk.CTkFrame):
             self.current_output_dir = output_dir
             self._sync_scene_buttons()
 
+    def _simplify_ply_for_viewer(self, source: Path, dest: Path) -> bool:
+        try:
+            from plyfile import PlyData, PlyElement
+        except Exception as exc:
+            self.log(f"PLY simplify skipped: {exc}")
+            return False
+        try:
+            plydata = PlyData.read(str(source))
+            vertex = next((elem for elem in plydata.elements if elem.name == "vertex"), None)
+            if vertex is None:
+                self.log("PLY simplify failed: no vertex element.")
+                return False
+            vertex_element = PlyElement.describe(vertex.data, "vertex")
+            PlyData([vertex_element], text=False, byte_order="<").write(str(dest))
+            return True
+        except Exception as exc:
+            self.log(f"PLY simplify failed: {exc}")
+            return False
     def _start_viewer_server(self, directory: Path) -> str:
         port = 8000
         while port < 8100:

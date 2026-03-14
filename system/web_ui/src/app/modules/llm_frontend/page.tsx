@@ -112,6 +112,7 @@ export default function LLMFrontendPage() {
         <div className="eyebrow">{translations.mod_llm_title || "Chat AI"}</div>
         <h1>{translations.mod_llm_title || "Chat AI"}</h1>
         <p>{translations.mod_llm_desc || "Chat with local models and manage files."}</p>
+        <p>{translations.mod_llm_plain || "A simple chat to talk with local models like a personal assistant."}</p>
       </div>
       {state?.running && <div className="banner">{translations.status_in_progress || "En progreso"}</div>}
 

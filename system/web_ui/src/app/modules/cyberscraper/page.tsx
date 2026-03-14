@@ -32,6 +32,11 @@ export default function CyberScraperPage() {
     setLogs(data.lines);
   };
 
+  const clearLogs = async () => {
+    await fetchJson("/modules/cyberscraper/clear_logs", { method: "POST" });
+    setLogs([]);
+  };
+
   useEffect(() => {
     refresh();
     refreshLogs();
@@ -94,6 +99,7 @@ export default function CyberScraperPage() {
         <div className="eyebrow">{translations.cyber_title || "CyberScraper 2077"}</div>
         <h1>{translations.cyber_title || "CyberScraper 2077"}</h1>
         <p>{translations.cyber_subtitle || "Scraping with Streamlit + LLMs."}</p>
+        <p>{translations.cyber_plain || "Helps collect data from websites with guided steps."}</p>
       </div>
       {state?.running && <div className="banner">{translations.status_in_progress || "En progreso"}</div>}
 
@@ -196,9 +202,12 @@ export default function CyberScraperPage() {
       <section className="panel">
         <div className="panel-header">
           <h2>Logs</h2>
+          <button className="ghost" onClick={clearLogs}>
+            {translations.log_clear_btn || "Clear log"}
+          </button>
         </div>
         <div className="panel-body">
-          <pre className="empty">{logs.length ? logs.join("\n") : "No logs yet."}</pre>
+          <pre className="empty log-view">{logs.length ? logs.join("\n") : "No logs yet."}</pre>
         </div>
       </section>
     </AppShell>

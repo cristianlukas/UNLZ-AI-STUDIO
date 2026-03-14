@@ -7,8 +7,11 @@ export type ModuleMeta = {
   key: string;
   title: string;
   description: string;
+  plain?: string;
   category: string;
   installed: boolean;
+  compute?: string;
+  coming_soon?: boolean;
 };
 
 export type AppSettings = {

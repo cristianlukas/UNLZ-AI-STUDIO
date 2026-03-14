@@ -409,6 +409,11 @@ button,
   font-family: var(--font-body), "Montserrat", sans-serif;
 }
 
+.log-view {
+  max-height: 260px;
+  overflow: auto;
+}
+
 .banner {
   padding: 1rem 1.2rem;
   border-radius: 16px;

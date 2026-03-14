@@ -34,6 +34,11 @@ export default function HYMotionPage() {
     setLogs(data.lines);
   };
 
+  const clearLogs = async () => {
+    await fetchJson("/modules/hy_motion/clear_logs", { method: "POST" });
+    setLogs([]);
+  };
+
   useEffect(() => {
     refresh();
     refreshLogs();
@@ -90,6 +95,7 @@ export default function HYMotionPage() {
         <div className="eyebrow">{translations.hymotion_title || "HY-Motion 1.0"}</div>
         <h1>{translations.hymotion_title || "HY-Motion 1.0"}</h1>
         <p>{translations.hymotion_subtitle || "Generacion y edicion de movimiento."}</p>
+        <p>{translations.hymotion_plain || "Generates character motion from text."}</p>
       </div>
       {state?.running && <div className="banner">{translations.status_in_progress || "En progreso"}</div>}
 
@@ -167,9 +173,12 @@ export default function HYMotionPage() {
       <section className="panel">
         <div className="panel-header">
           <h2>Logs</h2>
+          <button className="ghost" onClick={clearLogs}>
+            {translations.log_clear_btn || "Clear log"}
+          </button>
         </div>
         <div className="panel-body">
-          <pre className="empty">{logs.length ? logs.join("\n") : "No logs yet."}</pre>
+          <pre className="empty log-view">{logs.length ? logs.join("\n") : "No logs yet."}</pre>
         </div>
       </section>
     </AppShell>

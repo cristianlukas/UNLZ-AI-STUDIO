@@ -12,5 +12,13 @@
   "hyworld",
   "ml_sharp",
   "proedit",
-  "finetune_glm"
+  "finetune_glm",
+  "personaplex",
+  "lightonocr",
+  "qwen3_tts",
+  "omni_transfer",
+  "vibevoice_asr",
+  "luxtts",
+  "videomama",
+  "viga"
 ]

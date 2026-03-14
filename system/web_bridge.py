@@ -9,17 +9,20 @@ import sys
 import threading
 import time
 import importlib.metadata
+import importlib.util
 import webbrowser
 from shutil import which
 from pathlib import Path
 from typing import Dict, List, Optional
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
 import psutil
+from packaging import version
 
 from runtime_profiles import detect_system_info, ProfileManager
 from process_manager import GpuProcessManager
@@ -45,21 +48,58 @@ DEFAULT_SETTINGS = {
 }
 
 AVAILABLE_MODULES = [
-    {"key": "monitor", "title_key": "mod_monitor_title", "desc_key": "mod_monitor_desc", "category": "core"},
-    {"key": "llm_frontend", "title_key": "mod_llm_title", "desc_key": "mod_llm_desc", "category": "core"},
-    {"key": "inclu_ia", "title_key": "mod_incluia_title", "desc_key": "mod_incluia_desc", "category": "core"},
-    {"key": "ml_sharp", "title_key": "mod_mlsharp_title", "desc_key": "mod_mlsharp_desc", "category": "vision"},
-    {"key": "model_3d", "title_key": "mod_model3d_title", "desc_key": "mod_model3d_desc", "category": "vision"},
-    {"key": "spotedit", "title_key": "mod_spotedit_title", "desc_key": "mod_spotedit_desc", "category": "vision"},
-    {"key": "hy_motion", "title_key": "mod_hymotion_title", "desc_key": "mod_hymotion_desc", "category": "motion"},
-    {"key": "proedit", "title_key": "mod_proedit_title", "desc_key": "mod_proedit_desc", "category": "vision"},
-    {"key": "neutts", "title_key": "mod_neutts_title", "desc_key": "mod_neutts_desc", "category": "audio"},
-    {"key": "finetune_glm", "title_key": "mod_finetune_glm_title", "desc_key": "mod_finetune_glm_desc", "category": "core"},
-    {"key": "research_assistant", "title_key": "mod_research_title", "desc_key": "mod_research_desc", "category": "knowledge"},
-    {"key": "klein", "title_key": "mod_klein_title", "desc_key": "mod_klein_desc", "category": "vision"},
-    {"key": "hyworld", "title_key": "mod_hyworld_title", "desc_key": "mod_hyworld_desc", "category": "vision"},
-    {"key": "cyberscraper", "title_key": "mod_cyber_title", "desc_key": "mod_cyber_desc", "category": "tools"},
+    {"key": "monitor", "title_key": "mod_monitor_title", "desc_key": "mod_monitor_desc", "category": "core", "compute": "cpu"},
+    {"key": "llm_frontend", "title_key": "mod_llm_title", "desc_key": "mod_llm_desc", "category": "core", "compute": "cpu_gpu"},
+    {"key": "inclu_ia", "title_key": "mod_incluia_title", "desc_key": "mod_incluia_desc", "category": "core", "compute": "cpu"},
+    {"key": "ml_sharp", "title_key": "mod_mlsharp_title", "desc_key": "mod_mlsharp_desc", "category": "vision", "compute": "gpu"},
+    {"key": "model_3d", "title_key": "mod_model3d_title", "desc_key": "mod_model3d_desc", "category": "vision", "compute": "gpu"},
+    {"key": "spotedit", "title_key": "mod_spotedit_title", "desc_key": "mod_spotedit_desc", "category": "vision", "compute": "gpu"},
+    {"key": "hy_motion", "title_key": "mod_hymotion_title", "desc_key": "mod_hymotion_desc", "category": "motion", "compute": "gpu"},
+    {"key": "proedit", "title_key": "mod_proedit_title", "desc_key": "mod_proedit_desc", "category": "vision", "compute": "gpu", "coming_soon": True},
+    {"key": "neutts", "title_key": "mod_neutts_title", "desc_key": "mod_neutts_desc", "category": "audio", "compute": "cpu_gpu"},
+    {"key": "finetune_glm", "title_key": "mod_finetune_glm_title", "desc_key": "mod_finetune_glm_desc", "category": "core", "compute": "cpu_gpu"},
+    {"key": "research_assistant", "title_key": "mod_research_title", "desc_key": "mod_research_desc", "category": "knowledge", "compute": "cpu"},
+    {"key": "klein", "title_key": "mod_klein_title", "desc_key": "mod_klein_desc", "category": "vision", "compute": "gpu"},
+    {"key": "hyworld", "title_key": "mod_hyworld_title", "desc_key": "mod_hyworld_desc", "category": "vision", "compute": "gpu"},
+    {"key": "cyberscraper", "title_key": "mod_cyber_title", "desc_key": "mod_cyber_desc", "category": "tools", "compute": "cpu"},
+    {"key": "viga", "title_key": "mod_viga_title", "desc_key": "mod_viga_desc", "category": "vision", "compute": "gpu"},
+    {"key": "videomama", "title_key": "mod_videomama_title", "desc_key": "mod_videomama_desc", "category": "vision", "compute": "gpu"},
+    {"key": "luxtts", "title_key": "mod_luxtts_title", "desc_key": "mod_luxtts_desc", "category": "audio", "compute": "cpu_or_gpu"},
+    {"key": "vibevoice_asr", "title_key": "mod_vibevoice_asr_title", "desc_key": "mod_vibevoice_asr_desc", "category": "audio", "compute": "cpu_or_gpu"},
+    {"key": "frankenmotion", "title_key": "mod_frankenmotion_title", "desc_key": "mod_frankenmotion_desc", "category": "motion", "compute": "gpu", "coming_soon": True},
+    {"key": "flowact_r1", "title_key": "mod_flowact_r1_title", "desc_key": "mod_flowact_r1_desc", "category": "motion", "compute": "gpu", "coming_soon": True},
+    {"key": "omni_transfer", "title_key": "mod_omni_transfer_title", "desc_key": "mod_omni_transfer_desc", "category": "vision", "compute": "gpu"},
+    {"key": "qwen3_tts", "title_key": "mod_qwen3_tts_title", "desc_key": "mod_qwen3_tts_desc", "category": "audio", "compute": "cpu_or_gpu"},
+    {"key": "lightonocr", "title_key": "mod_lightonocr_title", "desc_key": "mod_lightonocr_desc", "category": "vision", "compute": "cpu_or_gpu"},
+    {"key": "personaplex", "title_key": "mod_personaplex_title", "desc_key": "mod_personaplex_desc", "category": "audio", "compute": "gpu"},
 ]
+
+MODEL3D_PLAIN_KEYS = {
+    "monitor": "mod_monitor_plain",
+    "llm_frontend": "mod_llm_plain",
+    "inclu_ia": "mod_incluia_plain",
+    "ml_sharp": "mlsharp_plain",
+    "model_3d": "model3d_plain",
+    "spotedit": "spotedit_plain",
+    "hy_motion": "hymotion_plain",
+    "proedit": "proedit_plain",
+    "neutts": "neutts_plain",
+    "finetune_glm": "finetune_plain",
+    "research_assistant": "mod_research_plain",
+    "klein": "klein_plain",
+    "hyworld": "hyworld_plain",
+    "cyberscraper": "cyber_plain",
+    "viga": "viga_plain",
+    "videomama": "videomama_plain",
+    "luxtts": "luxtts_plain",
+    "vibevoice_asr": "vibevoice_asr_plain",
+    "frankenmotion": "frankenmotion_plain",
+    "flowact_r1": "flowact_r1_plain",
+    "omni_transfer": "omni_transfer_plain",
+    "qwen3_tts": "qwen3_tts_plain",
+    "lightonocr": "lightonocr_plain",
+    "personaplex": "personaplex_plain",
+}
 
 SERVICE_META = [
     {"key": "llm_service", "name_key": "svc_name_llm", "desc_key": "svc_desc_llm", "port": 8080},
@@ -85,9 +125,12 @@ HYWORLD_OUTPUT_DIR = BASE_DIR / "hyworld-out"
 KLEIN_DATA_DIR = BASE_DIR / "data" / "klein"
 KLEIN_OUTPUT_DIR = BASE_DIR / "klein-out"
 INCLUIA_SERVER_PATH = BASE_DIR / "modules" / "inclu_ia" / "software" / "server.py"
+INCLUIA_REQ_PATH = BASE_DIR / "modules" / "inclu_ia" / "requirements.txt"
 MLSHARP_BACKEND_DIR = BASE_DIR / "ai-backends" / "ml-sharp"
 MLSHARP_OUTPUT_DIR = BASE_DIR / "ml-sharp-out"
 MLSHARP_VIEWER_TEMPLATE = BASE_DIR / "modules" / "ml_sharp" / "viewer_template.html"
+MLSHARP_MODEL_URL = "https://ml-site.cdn-apple.com/models/sharp/sharp_2572gikvuh.pt"
+MLSHARP_MODEL_NAME = "sharp_2572gikvuh.pt"
 MODEL3D_DATA_DIR = BASE_DIR / "data" / "model_3d"
 MODEL3D_CONFIG_PATH = MODEL3D_DATA_DIR / "config.json"
 MODEL3D_OUTPUT_BASE = BASE_DIR.parent / "system" / "3d-out"
@@ -106,6 +149,23 @@ RESEARCH_INDEX_PATH = RESEARCH_DATA_DIR / "index.json"
 SPOTEDIT_BACKEND_DIR = BASE_DIR / "ai-backends" / "SpotEdit"
 SPOTEDIT_DATA_DIR = BASE_DIR / "data" / "spotedit"
 SPOTEDIT_OUTPUT_DIR = BASE_DIR / "spotedit-out"
+VIGA_BACKEND_DIR = BASE_DIR / "ai-backends" / "VIGA"
+VIGA_OUTPUT_DIR = BASE_DIR / "viga-out"
+VIGA_SAM_URL = "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth"
+VIDEOMAMA_BACKEND_DIR = BASE_DIR / "ai-backends" / "VideoMaMa"
+VIDEOMAMA_OUTPUT_DIR = BASE_DIR / "videomama-out"
+LUXTTS_BACKEND_DIR = BASE_DIR / "ai-backends" / "LuxTTS"
+LUXTTS_OUTPUT_DIR = BASE_DIR / "luxtts-out"
+VIBEVOICE_BACKEND_DIR = BASE_DIR / "ai-backends" / "VibeVoice"
+VIBEVOICE_OUTPUT_DIR = BASE_DIR / "vibevoice-asr-out"
+FRANKENMOTION_BACKEND_DIR = BASE_DIR / "ai-backends" / "FrankenMotion"
+OMNITRANSFER_BACKEND_DIR = BASE_DIR / "ai-backends" / "OmniTransfer"
+QWEN3TTS_BACKEND_DIR = BASE_DIR / "ai-backends" / "Qwen3-TTS"
+QWEN3TTS_OUTPUT_DIR = BASE_DIR / "qwen3-tts-out"
+LIGHTONOCR_BACKEND_DIR = BASE_DIR / "ai-backends" / "LightOnOCR"
+LIGHTONOCR_OUTPUT_DIR = BASE_DIR / "lightonocr-out"
+PERSONAPLEX_BACKEND_DIR = BASE_DIR / "ai-backends" / "PersonaPlex"
+PERSONAPLEX_OUTPUT_DIR = BASE_DIR / "personaplex-out"
 
 HYWORLD_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 KLEIN_DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -122,6 +182,13 @@ FINETUNE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 RESEARCH_DOCS_DIR.mkdir(parents=True, exist_ok=True)
 SPOTEDIT_DATA_DIR.mkdir(parents=True, exist_ok=True)
 SPOTEDIT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+VIGA_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+VIDEOMAMA_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+LUXTTS_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+VIBEVOICE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+QWEN3TTS_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+LIGHTONOCR_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+PERSONAPLEX_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _log_path(name: str) -> Path:
@@ -143,6 +210,15 @@ def _tail_log(name: str, lines: int = 200) -> List[str]:
         return data[-lines:]
     except Exception:
         return []
+
+
+def _clear_log(name: str) -> None:
+    path = _log_path(name)
+    if path.exists():
+        try:
+            path.unlink()
+        except Exception:
+            path.write_text("", encoding="utf-8")
 
 
 def _run_cmd(key: str, cmd: List[str], cwd: Optional[Path] = None, env: Optional[Dict] = None) -> None:
@@ -173,6 +249,28 @@ def _run_cmd(key: str, cmd: List[str], cwd: Optional[Path] = None, env: Optional
                 MODULE_PROCS.pop(key, None)
 
     threading.Thread(target=worker, daemon=True).start()
+
+
+def _run_cmd_blocking(key: str, cmd: List[str], cwd: Optional[Path] = None) -> int:
+    _append_log(key, f"$ {' '.join(cmd)}")
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(cwd) if cwd else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+        )
+        if proc.stdout:
+            for line in proc.stdout:
+                _append_log(key, line.rstrip())
+        proc.wait()
+        _append_log(key, f"[done] exit={proc.returncode}")
+        return proc.returncode
+    except Exception as exc:
+        _append_log(key, f"[error] {exc}")
+        return 1
 
 
 def _run_cmd_with_marker(
@@ -589,6 +687,24 @@ def _model3d_weights_options(key: str) -> List[Dict]:
     return []
 
 
+def _hf_cache_dir() -> Path:
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+        return Path(HF_HUB_CACHE)
+    except Exception:
+        return Path.home() / ".cache" / "huggingface" / "hub"
+
+
+def _model3d_clear_hf_cache(repo_id: str) -> None:
+    cache_dir = _hf_cache_dir()
+    if not cache_dir.exists():
+        return
+    safe_id = repo_id.replace("/", "--")
+    target = cache_dir / f"models--{safe_id}"
+    if target.exists():
+        shutil.rmtree(target, ignore_errors=True)
+
+
 def _model3d_is_backend_installed(key: str) -> bool:
     repo_path = _model3d_repo_path(key)
     return bool(repo_path and repo_path.exists())
@@ -601,6 +717,108 @@ def _model3d_is_weights_installed(key: str) -> bool:
     option = options[0]
     local_dir = Path(option["local_dir"])
     return local_dir.exists()
+
+
+def _model3d_has_custom_rasterizer() -> bool:
+    try:
+        import custom_rasterizer  # noqa: F401
+    except Exception:
+        pass
+    else:
+        return True
+    for path in sys.path:
+        if not path or "site-packages" not in path.lower():
+            continue
+        try:
+            base = Path(path)
+        except Exception:
+            continue
+        if (base / "custom_rasterizer").exists():
+            return True
+        for candidate in base.glob("custom_rasterizer*.egg"):
+            if candidate.exists():
+                return True
+        for candidate in base.glob("custom_rasterizer_kernel*.pyd"):
+            if candidate.exists():
+                return True
+    return False
+
+
+def _model3d_nvcc_version() -> str:
+    nvcc = which("nvcc")
+    if not nvcc:
+        default_nvcc = Path(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.1\bin\nvcc.exe")
+        if default_nvcc.exists():
+            nvcc = str(default_nvcc)
+    if not nvcc:
+        return ""
+    try:
+        output = subprocess.check_output([nvcc, "--version"], text=True, stderr=subprocess.STDOUT)
+    except Exception:
+        return ""
+    for line in output.splitlines():
+        line = line.strip()
+        if "release" in line.lower():
+            parts = line.split("release")
+            if len(parts) > 1:
+                return parts[1].split(",")[0].strip()
+    return ""
+
+
+def _model3d_torch_cuda_version() -> str:
+    try:
+        import torch
+    except Exception:
+        return ""
+    return str(getattr(torch.version, "cuda", "") or "")
+
+
+def _model3d_torch_version() -> str:
+    try:
+        import torch
+    except Exception:
+        return ""
+    return str(getattr(torch, "__version__", "") or "")
+
+
+def _model3d_torch_at_least(target: str) -> bool:
+    torch_version = _model3d_torch_version()
+    if not torch_version:
+        return False
+    try:
+        clean = torch_version.split("+")[0]
+        return version.parse(clean) >= version.parse(target)
+    except Exception:
+        return False
+
+
+def _model3d_compiler_found() -> bool:
+    if which("cl"):
+        return True
+    vswhere = Path(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe")
+    return vswhere.exists()
+
+
+def _model3d_prereqs_status() -> Dict:
+    try:
+        import pybind11  # noqa: F401
+        pybind11_ok = True
+    except Exception:
+        pybind11_ok = False
+    nvcc_version = _model3d_nvcc_version()
+    torch_cuda = _model3d_torch_cuda_version()
+    torch_version = _model3d_torch_version()
+    cuda_match = False
+    if nvcc_version and torch_cuda:
+        cuda_match = nvcc_version.startswith(torch_cuda)
+    return {
+        "pybind11_ok": pybind11_ok,
+        "compiler_ok": _model3d_compiler_found(),
+        "nvcc_version": nvcc_version,
+        "torch_cuda": torch_cuda,
+        "torch_version": torch_version,
+        "cuda_match": cuda_match,
+    }
 
 
 def _model3d_write_stepx1_script(input_path: str, output_dir: str, repo_path: Path) -> Path:
@@ -714,15 +932,27 @@ def _mlsharp_list_scenes() -> List[Dict]:
     scenes = []
     output_base = MLSHARP_OUTPUT_DIR
     output_base.mkdir(parents=True, exist_ok=True)
+    root_viewer = output_base / "gaussians" / "index.html"
+    if root_viewer.exists():
+        scenes.append(
+            {
+                "name": _mlsharp_scene_label(output_base, "Salida actual"),
+                "path": str(output_base),
+                "has_viewer": True,
+                "renamable": True,
+            }
+        )
     for path in output_base.iterdir():
         if path.is_dir() and path.name.startswith("splat_"):
             display = path.name.replace("splat_", "")
+            display = _mlsharp_scene_label(path, display)
             viewer_path = path / "gaussians" / "index.html"
             scenes.append(
                 {
                     "name": display,
                     "path": str(path),
                     "has_viewer": viewer_path.exists(),
+                    "renamable": True,
                 }
             )
     scenes.sort(key=lambda item: item["name"], reverse=True)
@@ -735,13 +965,19 @@ def _mlsharp_setup_viewer(output_dir: Path) -> None:
         gaussians_dir.mkdir(parents=True, exist_ok=True)
         viewer_dst = gaussians_dir / "index.html"
         scene_dst = gaussians_dir / "scene.ply"
+        scene_full_dst = gaussians_dir / "scene_full.ply"
         ply_files = [f for f in output_dir.iterdir() if f.suffix == ".ply"]
         if not ply_files:
             _append_log("ml_sharp", "Warning: No .ply file found in output.")
             return
         src_ply = ply_files[0]
-        shutil.move(str(src_ply), str(scene_dst))
-        _append_log("ml_sharp", f"Moved {src_ply.name} to {scene_dst}")
+        shutil.move(str(src_ply), str(scene_full_dst))
+        _append_log("ml_sharp", f"Moved {src_ply.name} to {scene_full_dst}")
+        if _mlsharp_simplify_ply(scene_full_dst, scene_dst):
+            _append_log("ml_sharp", f"Viewer PLY written to {scene_dst}")
+        else:
+            shutil.copy(str(scene_full_dst), str(scene_dst))
+            _append_log("ml_sharp", "Viewer PLY fallback: copied full PLY.")
         if MLSHARP_VIEWER_TEMPLATE.exists():
             shutil.copy(str(MLSHARP_VIEWER_TEMPLATE), str(viewer_dst))
             _append_log("ml_sharp", f"Viewer created at: {viewer_dst}")
@@ -749,6 +985,79 @@ def _mlsharp_setup_viewer(output_dir: Path) -> None:
             _append_log("ml_sharp", f"Error: viewer_template.html not found at {MLSHARP_VIEWER_TEMPLATE}")
     except Exception as exc:
         _append_log("ml_sharp", f"Error setting up viewer: {exc}")
+
+
+def _mlsharp_torch_status() -> Dict[str, bool]:
+    try:
+        import torch
+
+        cuda_ok = bool(torch.cuda.is_available()) and torch.version.cuda is not None
+        return {"installed": True, "cuda": cuda_ok}
+    except Exception:
+        return {"installed": False, "cuda": False}
+
+
+def _mlsharp_scene_label(scene_path: Path, fallback: str) -> str:
+    label_path = scene_path / ".scene_name"
+    try:
+        if label_path.exists():
+            value = label_path.read_text(encoding="utf-8").strip()
+            if value:
+                return value
+    except Exception:
+        pass
+    return fallback
+
+
+def _mlsharp_write_scene_label(scene_path: Path, name: str) -> None:
+    label_path = scene_path / ".scene_name"
+    scene_path.mkdir(parents=True, exist_ok=True)
+    label_path.write_text(name.strip(), encoding="utf-8")
+
+
+def _mlsharp_simplify_ply(source: Path, dest: Path) -> bool:
+    try:
+        from plyfile import PlyData, PlyElement
+    except Exception as exc:
+        _append_log("ml_sharp", f"PLY simplify skipped: {exc}")
+        return False
+    try:
+        plydata = PlyData.read(str(source))
+        vertex = next((elem for elem in plydata.elements if elem.name == "vertex"), None)
+        if vertex is None:
+            _append_log("ml_sharp", "PLY simplify failed: no vertex element.")
+            return False
+        vertex_element = PlyElement.describe(vertex.data, "vertex")
+        PlyData([vertex_element], text=False, byte_order="<").write(str(dest))
+        return True
+    except Exception as exc:
+        _append_log("ml_sharp", f"PLY simplify failed: {exc}")
+        return False
+
+
+def _mlsharp_checkpoint_path() -> Path:
+    return Path.home() / ".cache" / "torch" / "hub" / "checkpoints" / MLSHARP_MODEL_NAME
+
+
+def _mlsharp_ensure_checkpoint() -> Optional[Path]:
+    path = _mlsharp_checkpoint_path()
+    try:
+        if path.exists() and path.stat().st_size > 1024 * 1024:
+            return path
+    except Exception:
+        pass
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _append_log("ml_sharp", f"Downloading checkpoint to {path}...")
+        import urllib.request
+
+        with urllib.request.urlopen(MLSHARP_MODEL_URL) as response, path.open("wb") as out:
+            shutil.copyfileobj(response, out)
+        if path.exists() and path.stat().st_size > 1024 * 1024:
+            return path
+    except Exception as exc:
+        _append_log("ml_sharp", f"Checkpoint download failed: {exc}")
+    return None
 
 
 def _load_json(path: Path, default):
@@ -1034,6 +1343,12 @@ def _save_favorites(favorites: List[str]) -> None:
 
 def _build_modules(lang: str) -> List[Dict]:
     bundle = _get_language_bundle(lang)
+    compute_labels = {
+        "cpu": bundle.get("compute_cpu", "CPU"),
+        "gpu": bundle.get("compute_gpu", "GPU"),
+        "cpu_or_gpu": bundle.get("compute_cpu_or_gpu", "CPU o GPU"),
+        "cpu_gpu": bundle.get("compute_cpu_gpu", "CPU + GPU"),
+    }
     installed = set(_get_installed_modules())
     modules = []
     for meta in AVAILABLE_MODULES:
@@ -1043,7 +1358,10 @@ def _build_modules(lang: str) -> List[Dict]:
                 "category": meta["category"],
                 "title": bundle.get(meta["title_key"], meta["key"]),
                 "description": bundle.get(meta["desc_key"], ""),
+                "plain": bundle.get(MODEL3D_PLAIN_KEYS.get(meta["key"], ""), ""),
                 "installed": meta["key"] in installed,
+                "compute": compute_labels.get(meta.get("compute"), ""),
+                "coming_soon": bool(meta.get("coming_soon")),
             }
         )
     return modules
@@ -1116,6 +1434,11 @@ class GaussianScene(BaseModel):
     path: str
 
 
+class PickDialog(BaseModel):
+    title: Optional[str] = None
+    initial_dir: Optional[str] = None
+
+
 class CyberInstall(BaseModel):
     branch: str | None = None
 
@@ -1146,6 +1469,93 @@ class HYWorldRun(BaseModel):
     mode: str
     input_path: str | None = None
     output_dir: str | None = None
+
+
+class VigaDeps(BaseModel):
+    target: str | None = None
+
+
+class VigaRun(BaseModel):
+    runner: str
+    task: str
+    model: str
+    dataset_path: str | None = None
+    output_dir: str | None = None
+    max_rounds: int | None = None
+
+
+class VideoMamaRun(BaseModel):
+    base_model_path: str
+    unet_checkpoint_path: str
+    image_root_path: str
+    mask_root_path: str
+    output_dir: str | None = None
+    keep_aspect_ratio: bool = False
+
+
+class LuxTTSRun(BaseModel):
+    text: str
+    prompt_audio: str
+    output_dir: str | None = None
+    model_id: str = "YatharthS/LuxTTS"
+    device: str = "auto"
+    threads: int = 2
+    rms: float = 0.01
+    t_shift: float = 0.9
+    num_steps: int = 4
+    speed: float = 1.0
+    return_smooth: bool = False
+
+
+class VibeVoiceASRRun(BaseModel):
+    model_path: str = "microsoft/VibeVoice-ASR"
+    audio_file: str
+    output_dir: str | None = None
+    device: str = "auto"
+    max_new_tokens: int = 32768
+    temperature: float = 0.0
+    top_p: float = 1.0
+    num_beams: int = 1
+    attn_implementation: str = "flash_attention_2"
+
+
+class Qwen3TTSRun(BaseModel):
+    mode: str = "custom_voice"
+    model_id: str = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+    text: str
+    language: str = "Auto"
+    speaker: str = "Vivian"
+    instruct: str | None = None
+    ref_audio: str | None = None
+    ref_text: str | None = None
+    output_dir: str | None = None
+    device: str = "auto"
+    dtype: str = "bfloat16"
+    attn_implementation: str = "flash_attention_2"
+
+
+class LightOnOCRRun(BaseModel):
+    input_path: str
+    input_type: str = "auto"
+    page: int = 0
+    dpi: int = 200
+    model_id: str = "lightonai/LightOnOCR-2-1B"
+    device: str = "auto"
+    dtype: str = "auto"
+    max_new_tokens: int = 1024
+    temperature: float = 0.2
+    top_p: float = 0.9
+    output_dir: str | None = None
+
+
+class PersonaPlexRun(BaseModel):
+    input_wav: str
+    voice_prompt: str = "NATF2.pt"
+    text_prompt: str | None = None
+    seed: str = "42424242"
+    cpu_offload: bool = False
+    output_dir: str | None = None
+    hf_token: str | None = None
 
 
 class IncluIAStart(BaseModel):
@@ -1195,6 +1605,15 @@ class MLSharpRun(BaseModel):
 
 class MLSharpOpen(BaseModel):
     path: str
+
+
+class MLSharpTorchInstall(BaseModel):
+    variant: str = "cpu"
+
+
+class MLSharpRename(BaseModel):
+    path: str
+    name: str
 
 
 class Model3DSetBackend(BaseModel):
@@ -1302,6 +1721,19 @@ def bootstrap():
         "modules": _build_modules(lang),
         "favorites": _get_favorites(),
     }
+
+
+@app.post("/ui/pick_file")
+def pick_file(payload: PickDialog):
+    paths = _pick_file_dialog(payload.title, payload.initial_dir)
+    primary = paths[0] if paths else ""
+    return {"path": primary, "paths": paths}
+
+
+@app.post("/ui/pick_folder")
+def pick_folder(payload: PickDialog):
+    path = _pick_folder_dialog(payload.title, payload.initial_dir)
+    return {"path": path}
 
 
 @app.get("/modules")
@@ -1581,6 +2013,12 @@ def cyberscraper_open():
 def cyberscraper_logs(lines: int = 200):
     return {"lines": _tail_log("cyberscraper", lines)}
 
+@app.post("/modules/cyberscraper/clear_logs")
+def cyberscraper_clear_logs():
+    _clear_log("cyberscraper")
+    return {"ok": True}
+
+
 
 @app.get("/modules/hy_motion/state")
 def hymotion_state():
@@ -1699,6 +2137,12 @@ def hymotion_open(payload: GaussianScene):
 def hymotion_logs(lines: int = 200):
     return {"lines": _tail_log("hy_motion", lines)}
 
+@app.post("/modules/hy_motion/clear_logs")
+def hy_motion_clear_logs():
+    _clear_log("hy_motion")
+    return {"ok": True}
+
+
 
 @app.get("/modules/hyworld/state")
 def hyworld_state():
@@ -1794,6 +2238,909 @@ def hyworld_open(payload: GaussianScene):
 def hyworld_logs(lines: int = 200):
     return {"lines": _tail_log("hyworld", lines)}
 
+@app.post("/modules/hyworld/clear_logs")
+def hyworld_clear_logs():
+    _clear_log("hyworld")
+    return {"ok": True}
+
+
+def _viga_sam_path() -> Path:
+    return VIGA_BACKEND_DIR / "utils" / "third_party" / "sam" / "sam_vit_h_4b8939.pth"
+
+
+@app.get("/modules/viga/state")
+def viga_state():
+    return {
+        "installed": VIGA_BACKEND_DIR.exists(),
+        "output_dir": str(VIGA_OUTPUT_DIR),
+        "running": _is_running("viga"),
+        "sam_downloaded": _viga_sam_path().exists(),
+    }
+
+
+@app.post("/modules/viga/install")
+def viga_install():
+    if VIGA_BACKEND_DIR.exists():
+        return {"ok": True}
+    VIGA_BACKEND_DIR.parent.mkdir(parents=True, exist_ok=True)
+
+    def worker():
+        rc = _run_cmd_blocking(
+            "viga",
+            ["git", "clone", "--depth", "1", "https://github.com/Fugtemypt123/VIGA", str(VIGA_BACKEND_DIR)],
+            cwd=VIGA_BACKEND_DIR.parent,
+        )
+        if rc == 0:
+            _run_cmd_blocking(
+                "viga",
+                ["git", "submodule", "update", "--init", "--recursive"],
+                cwd=VIGA_BACKEND_DIR,
+            )
+
+    threading.Thread(target=worker, daemon=True).start()
+    return {"ok": True}
+
+
+@app.post("/modules/viga/uninstall")
+def viga_uninstall():
+    if VIGA_BACKEND_DIR.exists():
+        shutil.rmtree(VIGA_BACKEND_DIR, ignore_errors=True)
+    return {"ok": True}
+
+
+@app.post("/modules/viga/deps")
+def viga_deps(payload: VigaDeps):
+    if not VIGA_BACKEND_DIR.exists():
+        raise HTTPException(status_code=404, detail="Backend not installed")
+    target = (payload.target or "agent").lower()
+    req_map = {
+        "agent": "requirements/requirement_agent.txt",
+        "blender": "requirements/requirement_blender.txt",
+        "sam": "requirements/requirement_sam.txt",
+    }
+    req_rel = req_map.get(target)
+    if not req_rel:
+        raise HTTPException(status_code=400, detail="Unknown dependency target")
+    req_path = VIGA_BACKEND_DIR / req_rel
+    if not req_path.exists():
+        raise HTTPException(status_code=404, detail=f"{req_rel} not found")
+    python_path = sys.executable.replace("pythonw.exe", "python.exe")
+    _run_cmd("viga", [python_path, "-m", "pip", "install", "-r", str(req_path)], cwd=VIGA_BACKEND_DIR)
+    return {"ok": True}
+
+
+@app.post("/modules/viga/download_sam")
+def viga_download_sam():
+    if not VIGA_BACKEND_DIR.exists():
+        raise HTTPException(status_code=404, detail="Backend not installed")
+    target = _viga_sam_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    def worker():
+        _append_log("viga", f"$ download {VIGA_SAM_URL}")
+        try:
+            with httpx.stream("GET", VIGA_SAM_URL, timeout=120) as response:
+                response.raise_for_status()
+                with target.open("wb") as handle:
+                    for chunk in response.iter_bytes():
+                        if chunk:
+                            handle.write(chunk)
+            _append_log("viga", "[done] sam download")
+        except Exception as exc:
+            _append_log("viga", f"[error] {exc}")
+
+    threading.Thread(target=worker, daemon=True).start()
+    return {"ok": True}
+
+
+@app.post("/modules/viga/run")
+def viga_run(payload: VigaRun):
+    if not VIGA_BACKEND_DIR.exists():
+        raise HTTPException(status_code=404, detail="Backend not installed")
+    runner = payload.runner.strip()
+    task = payload.task.strip()
+    model = payload.model.strip()
+    if not runner or not task or not model:
+        raise HTTPException(status_code=400, detail="runner, task, and model are required")
+    script_path = VIGA_BACKEND_DIR / "runners" / f"{runner}.py"
+    if not script_path.exists():
+        raise HTTPException(status_code=404, detail="Runner not found")
+    default_dataset = "data/dynamic_scene" if runner == "dynamic_scene" else "data/static_scene"
+    dataset_path = payload.dataset_path or default_dataset
+    output_dir = Path(
+        payload.output_dir
+        or str(VIGA_OUTPUT_DIR / f"{runner}_{time.strftime('%Y%m%d_%H%M%S')}")
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    python_path = sys.executable.replace("pythonw.exe", "python.exe")
+    cmd = [
+        python_path,
+        str(script_path),
+        "--task",
+        task,
+        "--model",
+        model,
+        "--dataset-path",
+        dataset_path,
+        "--output-dir",
+        str(output_dir),
+    ]
+    if payload.max_rounds:
+        cmd.extend(["--max-rounds", str(payload.max_rounds)])
+    _run_cmd("viga", cmd, cwd=VIGA_BACKEND_DIR)
+    return {"ok": True}
+
+
+@app.post("/modules/viga/open_output")
+def viga_open_output(payload: GaussianScene):
+    target = Path(payload.path)
+    target.mkdir(parents=True, exist_ok=True)
+    os.startfile(str(target))
+    return {"ok": True}
+
+
+@app.get("/modules/viga/logs")
+def viga_logs(lines: int = 200):
+    return {"lines": _tail_log("viga", lines)}
+
+
+@app.post("/modules/viga/clear_logs")
+def viga_clear_logs():
+    _clear_log("viga")
+    return {"ok": True}
+
+
+@app.get("/modules/videomama/state")
+def videomama_state():
+    return {
+        "installed": VIDEOMAMA_BACKEND_DIR.exists(),
+        "output_dir": str(VIDEOMAMA_OUTPUT_DIR),
+        "running": _is_running("videomama"),
+    }
+
+
+@app.post("/modules/videomama/install")
+def videomama_install():
+    if VIDEOMAMA_BACKEND_DIR.exists():
+        return {"ok": True}
+    VIDEOMAMA_BACKEND_DIR.parent.mkdir(parents=True, exist_ok=True)
+    _run_cmd(
+        "videomama",
+        ["git", "clone", "--depth", "1", "https://github.com/cvlab-kaist/VideoMaMa", str(VIDEOMAMA_BACKEND_DIR)],
+        cwd=VIDEOMAMA_BACKEND_DIR.parent,
+    )
+    return {"ok": True}
+
+
+@app.post("/modules/videomama/uninstall")
+def videomama_uninstall():
+    if VIDEOMAMA_BACKEND_DIR.exists():
+        shutil.rmtree(VIDEOMAMA_BACKEND_DIR, ignore_errors=True)
+    return {"ok": True}
+
+
+@app.post("/modules/videomama/deps")
+def videomama_deps():
+    if not VIDEOMAMA_BACKEND_DIR.exists():
+        raise HTTPException(status_code=404, detail="Backend not installed")
+    script_path = VIDEOMAMA_BACKEND_DIR / "scripts" / "setup.sh"
+    if not script_path.exists():
+        raise HTTPException(status_code=404, detail="setup.sh not found")
+    _run_cmd("videomama", ["bash", str(script_path)], cwd=VIDEOMAMA_BACKEND_DIR)
+    return {"ok": True}
+
+
+@app.post("/modules/videomama/run")
+def videomama_run(payload: VideoMamaRun):
+    if not VIDEOMAMA_BACKEND_DIR.exists():
+        raise HTTPException(status_code=404, detail="Backend not installed")
+    script_path = VIDEOMAMA_BACKEND_DIR / "inference_onestep_folder.py"
+    if not script_path.exists():
+        raise HTTPException(status_code=404, detail="inference_onestep_folder.py not found")
+    output_dir = Path(payload.output_dir or str(VIDEOMAMA_OUTPUT_DIR))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    python_path = sys.executable.replace("pythonw.exe", "python.exe")
+    cmd = [
+        python_path,
+        str(script_path),
+        "--base_model_path",
+        payload.base_model_path,
+        "--unet_checkpoint_path",
+        payload.unet_checkpoint_path,
+        "--image_root_path",
+        payload.image_root_path,
+        "--mask_root_path",
+        payload.mask_root_path,
+        "--output_dir",
+        str(output_dir),
+    ]
+    if payload.keep_aspect_ratio:
+        cmd.append("--keep_aspect_ratio")
+    _run_cmd("videomama", cmd, cwd=VIDEOMAMA_BACKEND_DIR)
+    return {"ok": True}
+
+
+@app.post("/modules/videomama/open_output")
+def videomama_open_output(payload: GaussianScene):
+    target = Path(payload.path)
+    target.mkdir(parents=True, exist_ok=True)
+    os.startfile(str(target))
+    return {"ok": True}
+
+
+@app.get("/modules/videomama/logs")
+def videomama_logs(lines: int = 200):
+    return {"lines": _tail_log("videomama", lines)}
+
+
+@app.post("/modules/videomama/clear_logs")
+def videomama_clear_logs():
+    _clear_log("videomama")
+    return {"ok": True}
+
+
+@app.get("/modules/luxtts/state")
+def luxtts_state():
+    return {
+        "installed": LUXTTS_BACKEND_DIR.exists(),
+        "output_dir": str(LUXTTS_OUTPUT_DIR),
+        "running": _is_running("luxtts"),
+    }
+
+
+@app.post("/modules/luxtts/install")
+def luxtts_install():
+    if LUXTTS_BACKEND_DIR.exists():
+        return {"ok": True}
+    LUXTTS_BACKEND_DIR.parent.mkdir(parents=True, exist_ok=True)
+    _run_cmd(
+        "luxtts",
+        ["git", "clone", "--depth", "1", "https://github.com/ysharma3501/LuxTTS", str(LUXTTS_BACKEND_DIR)],
+        cwd=LUXTTS_BACKEND_DIR.parent,
+    )
+    return {"ok": True}
+
+
+@app.post("/modules/luxtts/uninstall")
+def luxtts_uninstall():
+    if LUXTTS_BACKEND_DIR.exists():
+        shutil.rmtree(LUXTTS_BACKEND_DIR, ignore_errors=True)
+    return {"ok": True}
+
+
+@app.post("/modules/luxtts/deps")
+def luxtts_deps():
+    if not LUXTTS_BACKEND_DIR.exists():
+        raise HTTPException(status_code=404, detail="Backend not installed")
+    req_path = LUXTTS_BACKEND_DIR / "requirements.txt"
+    if not req_path.exists():
+        raise HTTPException(status_code=404, detail="requirements.txt not found")
+    python_path = sys.executable.replace("pythonw.exe", "python.exe")
+    _run_cmd("luxtts", [python_path, "-m", "pip", "install", "-r", str(req_path)], cwd=LUXTTS_BACKEND_DIR)
+    return {"ok": True}
+
+
+@app.post("/modules/luxtts/run")
+def luxtts_run(payload: LuxTTSRun):
+    if not LUXTTS_BACKEND_DIR.exists():
+        raise HTTPException(status_code=404, detail="Backend not installed")
+    if not payload.text.strip():
+        raise HTTPException(status_code=400, detail="Text is required")
+    if not payload.prompt_audio.strip():
+        raise HTTPException(status_code=400, detail="Prompt audio is required")
+    script_path = BASE_DIR / "data" / "luxtts" / "luxtts_infer.py"
+    if not script_path.exists():
+        raise HTTPException(status_code=404, detail="luxtts_infer.py not found")
+    output_dir = Path(payload.output_dir or str(LUXTTS_OUTPUT_DIR))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    python_path = sys.executable.replace("pythonw.exe", "python.exe")
+    cmd = [
+        python_path,
+        str(script_path),
+        "--model_id",
+        payload.model_id,
+        "--device",
+        payload.device,
+        "--threads",
+        str(payload.threads),
+        "--text",
+        payload.text,
+        "--prompt_audio",
+        payload.prompt_audio,
+        "--output_dir",
+        str(output_dir),
+        "--rms",
+        str(payload.rms),
+        "--t_shift",
+        str(payload.t_shift),
+        "--num_steps",
+        str(payload.num_steps),
+        "--speed",
+        str(payload.speed),
+    ]
+    if payload.return_smooth:
+        cmd.append("--return_smooth")
+    _run_cmd("luxtts", cmd, cwd=LUXTTS_BACKEND_DIR)
+    return {"ok": True}
+
+
+@app.post("/modules/luxtts/open_output")
+def luxtts_open_output(payload: GaussianScene):
+    target = Path(payload.path)
+    target.mkdir(parents=True, exist_ok=True)
+    os.startfile(str(target))
+    return {"ok": True}
+
+
+@app.get("/modules/luxtts/logs")
+def luxtts_logs(lines: int = 200):
+    return {"lines": _tail_log("luxtts", lines)}
+
+
+@app.post("/modules/luxtts/clear_logs")
+def luxtts_clear_logs():
+    _clear_log("luxtts")
+    return {"ok": True}
+
+
+@app.get("/modules/vibevoice_asr/state")
+def vibevoice_state():
+    return {
+        "installed": VIBEVOICE_BACKEND_DIR.exists(),
+        "output_dir": str(VIBEVOICE_OUTPUT_DIR),
+        "running": _is_running("vibevoice_asr"),
+    }
+
+
+@app.post("/modules/vibevoice_asr/install")
+def vibevoice_install():
+    if VIBEVOICE_BACKEND_DIR.exists():
+        return {"ok": True}
+    VIBEVOICE_BACKEND_DIR.parent.mkdir(parents=True, exist_ok=True)
+    _run_cmd(
+        "vibevoice_asr",
+        ["git", "clone", "--depth", "1", "https://github.com/microsoft/VibeVoice", str(VIBEVOICE_BACKEND_DIR)],
+        cwd=VIBEVOICE_BACKEND_DIR.parent,
+    )
+    return {"ok": True}
+
+
+@app.post("/modules/vibevoice_asr/uninstall")
+def vibevoice_uninstall():
+    if VIBEVOICE_BACKEND_DIR.exists():
+        shutil.rmtree(VIBEVOICE_BACKEND_DIR, ignore_errors=True)
+    return {"ok": True}
+
+
+@app.post("/modules/vibevoice_asr/deps")
+def vibevoice_deps():
+    if not VIBEVOICE_BACKEND_DIR.exists():
+        raise HTTPException(status_code=404, detail="Backend not installed")
+    python_path = sys.executable.replace("pythonw.exe", "python.exe")
+    _run_cmd(
+        "vibevoice_asr",
+        [python_path, "-m", "pip", "install", "-e", ".[asr]"],
+        cwd=VIBEVOICE_BACKEND_DIR,
+    )
+    return {"ok": True}
+
+
+@app.post("/modules/vibevoice_asr/run")
+def vibevoice_run(payload: VibeVoiceASRRun):
+    if not VIBEVOICE_BACKEND_DIR.exists():
+        raise HTTPException(status_code=404, detail="Backend not installed")
+    if not payload.audio_file.strip():
+        raise HTTPException(status_code=400, detail="audio_file is required")
+    script_path = BASE_DIR / "data" / "vibevoice_asr" / "vibevoice_asr_infer.py"
+    if not script_path.exists():
+        raise HTTPException(status_code=404, detail="vibevoice_asr_infer.py not found")
+    output_dir = Path(payload.output_dir or str(VIBEVOICE_OUTPUT_DIR))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    python_path = sys.executable.replace("pythonw.exe", "python.exe")
+    cmd = [
+        python_path,
+        str(script_path),
+        "--model_path",
+        payload.model_path,
+        "--audio_file",
+        payload.audio_file,
+        "--output_dir",
+        str(output_dir),
+        "--device",
+        payload.device,
+        "--max_new_tokens",
+        str(payload.max_new_tokens),
+        "--temperature",
+        str(payload.temperature),
+        "--top_p",
+        str(payload.top_p),
+        "--num_beams",
+        str(payload.num_beams),
+        "--attn_implementation",
+        payload.attn_implementation,
+    ]
+    _run_cmd("vibevoice_asr", cmd, cwd=VIBEVOICE_BACKEND_DIR)
+    return {"ok": True}
+
+
+@app.post("/modules/vibevoice_asr/open_output")
+def vibevoice_open_output(payload: GaussianScene):
+    target = Path(payload.path)
+    target.mkdir(parents=True, exist_ok=True)
+    os.startfile(str(target))
+    return {"ok": True}
+
+
+@app.get("/modules/vibevoice_asr/logs")
+def vibevoice_logs(lines: int = 200):
+    return {"lines": _tail_log("vibevoice_asr", lines)}
+
+
+@app.post("/modules/vibevoice_asr/clear_logs")
+def vibevoice_clear_logs():
+    _clear_log("vibevoice_asr")
+    return {"ok": True}
+
+
+@app.get("/modules/frankenmotion/state")
+def frankenmotion_state():
+    return {
+        "installed": FRANKENMOTION_BACKEND_DIR.exists(),
+        "running": _is_running("frankenmotion"),
+    }
+
+
+@app.post("/modules/frankenmotion/install")
+def frankenmotion_install():
+    if FRANKENMOTION_BACKEND_DIR.exists():
+        return {"ok": True}
+    FRANKENMOTION_BACKEND_DIR.parent.mkdir(parents=True, exist_ok=True)
+    _run_cmd(
+        "frankenmotion",
+        ["git", "clone", "--depth", "1", "https://github.com/Coral79/FrankenMotion-Code", str(FRANKENMOTION_BACKEND_DIR)],
+        cwd=FRANKENMOTION_BACKEND_DIR.parent,
+    )
+    return {"ok": True}
+
+
+@app.post("/modules/frankenmotion/uninstall")
+def frankenmotion_uninstall():
+    if FRANKENMOTION_BACKEND_DIR.exists():
+        shutil.rmtree(FRANKENMOTION_BACKEND_DIR, ignore_errors=True)
+    return {"ok": True}
+
+
+@app.get("/modules/frankenmotion/logs")
+def frankenmotion_logs(lines: int = 200):
+    return {"lines": _tail_log("frankenmotion", lines)}
+
+
+@app.post("/modules/frankenmotion/clear_logs")
+def frankenmotion_clear_logs():
+    _clear_log("frankenmotion")
+    return {"ok": True}
+
+
+@app.get("/modules/omni_transfer/state")
+def omnitransfer_state():
+    return {
+        "installed": OMNITRANSFER_BACKEND_DIR.exists(),
+        "running": _is_running("omni_transfer"),
+    }
+
+
+@app.post("/modules/omni_transfer/install")
+def omnitransfer_install():
+    if OMNITRANSFER_BACKEND_DIR.exists():
+        return {"ok": True}
+    OMNITRANSFER_BACKEND_DIR.parent.mkdir(parents=True, exist_ok=True)
+    _run_cmd(
+        "omni_transfer",
+        ["git", "clone", "--depth", "1", "https://github.com/PangzeCheung/OmniTransfer", str(OMNITRANSFER_BACKEND_DIR)],
+        cwd=OMNITRANSFER_BACKEND_DIR.parent,
+    )
+    return {"ok": True}
+
+
+@app.post("/modules/omni_transfer/uninstall")
+def omnitransfer_uninstall():
+    if OMNITRANSFER_BACKEND_DIR.exists():
+        shutil.rmtree(OMNITRANSFER_BACKEND_DIR, ignore_errors=True)
+    return {"ok": True}
+
+
+@app.get("/modules/omni_transfer/logs")
+def omnitransfer_logs(lines: int = 200):
+    return {"lines": _tail_log("omni_transfer", lines)}
+
+
+@app.post("/modules/omni_transfer/clear_logs")
+def omnitransfer_clear_logs():
+    _clear_log("omni_transfer")
+    return {"ok": True}
+
+
+@app.get("/modules/qwen3_tts/state")
+def qwen3_tts_state():
+    return {
+        "installed": QWEN3TTS_BACKEND_DIR.exists(),
+        "output_dir": str(QWEN3TTS_OUTPUT_DIR),
+        "running": _is_running("qwen3_tts"),
+    }
+
+
+@app.post("/modules/qwen3_tts/install")
+def qwen3_tts_install():
+    if QWEN3TTS_BACKEND_DIR.exists():
+        return {"ok": True}
+    QWEN3TTS_BACKEND_DIR.parent.mkdir(parents=True, exist_ok=True)
+    _run_cmd(
+        "qwen3_tts",
+        ["git", "clone", "--depth", "1", "https://github.com/QwenLM/Qwen3-TTS", str(QWEN3TTS_BACKEND_DIR)],
+        cwd=QWEN3TTS_BACKEND_DIR.parent,
+    )
+    return {"ok": True}
+
+
+@app.post("/modules/qwen3_tts/uninstall")
+def qwen3_tts_uninstall():
+    if QWEN3TTS_BACKEND_DIR.exists():
+        shutil.rmtree(QWEN3TTS_BACKEND_DIR, ignore_errors=True)
+    return {"ok": True}
+
+
+@app.post("/modules/qwen3_tts/deps")
+def qwen3_tts_deps():
+    if not QWEN3TTS_BACKEND_DIR.exists():
+        raise HTTPException(status_code=404, detail="Backend not installed")
+    python_path = sys.executable.replace("pythonw.exe", "python.exe")
+    _run_cmd("qwen3_tts", [python_path, "-m", "pip", "install", "-e", "."], cwd=QWEN3TTS_BACKEND_DIR)
+    return {"ok": True}
+
+
+@app.post("/modules/qwen3_tts/run")
+def qwen3_tts_run(payload: Qwen3TTSRun):
+    if not QWEN3TTS_BACKEND_DIR.exists():
+        raise HTTPException(status_code=404, detail="Backend not installed")
+    if not payload.text.strip():
+        raise HTTPException(status_code=400, detail="Text is required")
+    script_path = BASE_DIR / "data" / "qwen3_tts" / "qwen3_tts_infer.py"
+    if not script_path.exists():
+        raise HTTPException(status_code=404, detail="qwen3_tts_infer.py not found")
+    output_dir = Path(payload.output_dir or str(QWEN3TTS_OUTPUT_DIR))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    python_path = sys.executable.replace("pythonw.exe", "python.exe")
+    cmd = [
+        python_path,
+        str(script_path),
+        "--mode",
+        payload.mode,
+        "--model_id",
+        payload.model_id,
+        "--text",
+        payload.text,
+        "--language",
+        payload.language,
+        "--speaker",
+        payload.speaker,
+        "--output_dir",
+        str(output_dir),
+        "--device",
+        payload.device,
+        "--dtype",
+        payload.dtype,
+        "--attn_implementation",
+        payload.attn_implementation,
+    ]
+    if payload.instruct:
+        cmd.extend(["--instruct", payload.instruct])
+    if payload.ref_audio:
+        cmd.extend(["--ref_audio", payload.ref_audio])
+    if payload.ref_text:
+        cmd.extend(["--ref_text", payload.ref_text])
+    _run_cmd("qwen3_tts", cmd, cwd=QWEN3TTS_BACKEND_DIR)
+    return {"ok": True}
+
+
+@app.post("/modules/qwen3_tts/open_output")
+def qwen3_tts_open_output(payload: GaussianScene):
+    target = Path(payload.path)
+    target.mkdir(parents=True, exist_ok=True)
+    os.startfile(str(target))
+    return {"ok": True}
+
+
+@app.get("/modules/qwen3_tts/logs")
+def qwen3_tts_logs(lines: int = 200):
+    return {"lines": _tail_log("qwen3_tts", lines)}
+
+
+@app.post("/modules/qwen3_tts/clear_logs")
+def qwen3_tts_clear_logs():
+    _clear_log("qwen3_tts")
+    return {"ok": True}
+
+
+@app.get("/modules/lightonocr/state")
+def lightonocr_state():
+    return {
+        "installed": LIGHTONOCR_BACKEND_DIR.exists(),
+        "output_dir": str(LIGHTONOCR_OUTPUT_DIR),
+        "running": _is_running("lightonocr"),
+    }
+
+
+@app.post("/modules/lightonocr/install")
+def lightonocr_install():
+    if LIGHTONOCR_BACKEND_DIR.exists():
+        return {"ok": True}
+    LIGHTONOCR_BACKEND_DIR.mkdir(parents=True, exist_ok=True)
+    marker = LIGHTONOCR_BACKEND_DIR / "SOURCE.txt"
+    marker.write_text("https://huggingface.co/lightonai/LightOnOCR-2-1B\n", encoding="utf-8")
+    return {"ok": True}
+
+
+@app.post("/modules/lightonocr/uninstall")
+def lightonocr_uninstall():
+    if LIGHTONOCR_BACKEND_DIR.exists():
+        shutil.rmtree(LIGHTONOCR_BACKEND_DIR, ignore_errors=True)
+    return {"ok": True}
+
+
+@app.post("/modules/lightonocr/deps")
+def lightonocr_deps():
+    if not LIGHTONOCR_BACKEND_DIR.exists():
+        raise HTTPException(status_code=404, detail="Backend not installed")
+    python_path = sys.executable.replace("pythonw.exe", "python.exe")
+    _run_cmd(
+        "lightonocr",
+        [
+            python_path,
+            "-m",
+            "pip",
+            "install",
+            "git+https://github.com/huggingface/transformers",
+            "pillow",
+            "pypdfium2",
+        ],
+        cwd=LIGHTONOCR_BACKEND_DIR,
+    )
+    return {"ok": True}
+
+
+@app.post("/modules/lightonocr/run")
+def lightonocr_run(payload: LightOnOCRRun):
+    if not LIGHTONOCR_BACKEND_DIR.exists():
+        raise HTTPException(status_code=404, detail="Backend not installed")
+    if not payload.input_path.strip():
+        raise HTTPException(status_code=400, detail="input_path is required")
+    script_path = BASE_DIR / "data" / "lightonocr" / "lightonocr_infer.py"
+    if not script_path.exists():
+        raise HTTPException(status_code=404, detail="lightonocr_infer.py not found")
+    output_dir = Path(payload.output_dir or str(LIGHTONOCR_OUTPUT_DIR))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    python_path = sys.executable.replace("pythonw.exe", "python.exe")
+    cmd = [
+        python_path,
+        str(script_path),
+        "--input_path",
+        payload.input_path,
+        "--input_type",
+        payload.input_type,
+        "--page",
+        str(payload.page),
+        "--dpi",
+        str(payload.dpi),
+        "--model_id",
+        payload.model_id,
+        "--device",
+        payload.device,
+        "--dtype",
+        payload.dtype,
+        "--max_new_tokens",
+        str(payload.max_new_tokens),
+        "--temperature",
+        str(payload.temperature),
+        "--top_p",
+        str(payload.top_p),
+        "--output_dir",
+        str(output_dir),
+    ]
+    _run_cmd("lightonocr", cmd, cwd=LIGHTONOCR_BACKEND_DIR)
+    return {"ok": True}
+
+
+@app.post("/modules/lightonocr/open_output")
+def lightonocr_open_output(payload: GaussianScene):
+    target = Path(payload.path)
+    target.mkdir(parents=True, exist_ok=True)
+    os.startfile(str(target))
+    return {"ok": True}
+
+
+@app.get("/modules/lightonocr/logs")
+def lightonocr_logs(lines: int = 200):
+    return {"lines": _tail_log("lightonocr", lines)}
+
+
+@app.post("/modules/lightonocr/clear_logs")
+def lightonocr_clear_logs():
+    _clear_log("lightonocr")
+    return {"ok": True}
+
+
+@app.get("/modules/personaplex/state")
+def personaplex_state():
+    return {
+        "installed": PERSONAPLEX_BACKEND_DIR.exists(),
+        "output_dir": str(PERSONAPLEX_OUTPUT_DIR),
+        "running": _is_running("personaplex"),
+    }
+
+
+@app.post("/modules/personaplex/install")
+def personaplex_install():
+    if PERSONAPLEX_BACKEND_DIR.exists():
+        return {"ok": True}
+    PERSONAPLEX_BACKEND_DIR.parent.mkdir(parents=True, exist_ok=True)
+    _run_cmd(
+        "personaplex",
+        ["git", "clone", "--depth", "1", "https://github.com/NVIDIA/personaplex", str(PERSONAPLEX_BACKEND_DIR)],
+        cwd=PERSONAPLEX_BACKEND_DIR.parent,
+    )
+    return {"ok": True}
+
+
+@app.post("/modules/personaplex/uninstall")
+def personaplex_uninstall():
+    if PERSONAPLEX_BACKEND_DIR.exists():
+        shutil.rmtree(PERSONAPLEX_BACKEND_DIR, ignore_errors=True)
+    return {"ok": True}
+
+
+@app.post("/modules/personaplex/deps")
+def personaplex_deps():
+    if not PERSONAPLEX_BACKEND_DIR.exists():
+        raise HTTPException(status_code=404, detail="Backend not installed")
+    python_path = sys.executable.replace("pythonw.exe", "python.exe")
+    _run_cmd(
+        "personaplex",
+        [python_path, "-m", "pip", "install", "moshi/.", "accelerate"],
+        cwd=PERSONAPLEX_BACKEND_DIR,
+    )
+    return {"ok": True}
+
+
+@app.post("/modules/personaplex/run")
+def personaplex_run(payload: PersonaPlexRun):
+    if not PERSONAPLEX_BACKEND_DIR.exists():
+        raise HTTPException(status_code=404, detail="Backend not installed")
+    if not payload.input_wav.strip():
+        raise HTTPException(status_code=400, detail="input_wav is required")
+    script_path = BASE_DIR / "data" / "personaplex" / "personaplex_offline.py"
+    if not script_path.exists():
+        raise HTTPException(status_code=404, detail="personaplex_offline.py not found")
+    output_dir = Path(payload.output_dir or str(PERSONAPLEX_OUTPUT_DIR))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    python_path = sys.executable.replace("pythonw.exe", "python.exe")
+    cmd = [
+        python_path,
+        str(script_path),
+        "--repo_dir",
+        str(PERSONAPLEX_BACKEND_DIR),
+        "--input_wav",
+        payload.input_wav,
+        "--voice_prompt",
+        payload.voice_prompt,
+        "--seed",
+        payload.seed,
+        "--output_dir",
+        str(output_dir),
+    ]
+    if payload.text_prompt:
+        cmd.extend(["--text_prompt", payload.text_prompt])
+    if payload.cpu_offload:
+        cmd.append("--cpu_offload")
+    if payload.hf_token:
+        cmd.extend(["--hf_token", payload.hf_token])
+    _run_cmd("personaplex", cmd, cwd=PERSONAPLEX_BACKEND_DIR)
+    return {"ok": True}
+
+
+@app.post("/modules/personaplex/open_output")
+def personaplex_open_output(payload: GaussianScene):
+    target = Path(payload.path)
+    target.mkdir(parents=True, exist_ok=True)
+    os.startfile(str(target))
+    return {"ok": True}
+
+
+@app.get("/modules/personaplex/logs")
+def personaplex_logs(lines: int = 200):
+    return {"lines": _tail_log("personaplex", lines)}
+
+
+@app.post("/modules/personaplex/clear_logs")
+def personaplex_clear_logs():
+    _clear_log("personaplex")
+    return {"ok": True}
+
+def _incluia_deps_missing() -> bool:
+    required = ("flask", "flask_socketio", "faster_whisper", "speech_recognition", "numpy")
+    return any(importlib.util.find_spec(name) is None for name in required)
+
+
+def _ensure_incluia_deps() -> None:
+    if not _incluia_deps_missing():
+        return
+    python_path = sys.executable.replace("pythonw.exe", "python.exe")
+    if INCLUIA_REQ_PATH.exists():
+        cmd = [python_path, "-m", "pip", "install", "-r", str(INCLUIA_REQ_PATH)]
+    else:
+        cmd = [
+            python_path,
+            "-m",
+            "pip",
+            "install",
+            "flask",
+            "flask-socketio",
+            "faster-whisper",
+            "SpeechRecognition",
+            "numpy",
+        ]
+    _append_log("inclu_ia", "Instalando dependencias de Inclu-IA...")
+    rc = _run_cmd_blocking("inclu_ia", cmd, cwd=INCLUIA_SERVER_PATH.parent)
+    if rc != 0:
+        raise HTTPException(status_code=500, detail="No se pudieron instalar las dependencias de Inclu-IA.")
+
+
+def _pick_file_dialog(title: Optional[str], initial_dir: Optional[str]) -> List[str]:
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"tkinter no disponible: {exc}")
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        root.attributes("-topmost", True)
+    except Exception:
+        pass
+    filetypes = [("Images", "*.png;*.jpg;*.jpeg;*.bmp;*.webp"), ("All files", "*.*")]
+    paths = filedialog.askopenfilenames(
+        title=title or "Select file",
+        initialdir=initial_dir or "",
+        filetypes=filetypes,
+    )
+    try:
+        root.destroy()
+    except Exception:
+        pass
+    return list(paths) if paths else []
+
+
+def _pick_folder_dialog(title: Optional[str], initial_dir: Optional[str]) -> str:
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"tkinter no disponible: {exc}")
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        root.attributes("-topmost", True)
+    except Exception:
+        pass
+    path = filedialog.askdirectory(
+        title=title or "Select folder",
+        initialdir=initial_dir or "",
+    )
+    try:
+        root.destroy()
+    except Exception:
+        pass
+    return path or ""
+
 
 @app.get("/modules/inclu_ia/state")
 def incluia_state():
@@ -1815,6 +3162,7 @@ def incluia_start(payload: IncluIAStart):
         return {"ok": True}
     if not INCLUIA_SERVER_PATH.exists():
         raise HTTPException(status_code=404, detail="server.py not found")
+    _ensure_incluia_deps()
     model = payload.model or "tiny"
     port = payload.port or 5000
     MODULE_STATE["inclu_ia_model"] = model
@@ -1833,6 +3181,12 @@ def incluia_stop():
 @app.get("/modules/inclu_ia/logs")
 def incluia_logs(lines: int = 200):
     return {"lines": _tail_log("inclu_ia", lines)}
+
+@app.post("/modules/inclu_ia/clear_logs")
+def inclu_ia_clear_logs():
+    _clear_log("inclu_ia")
+    return {"ok": True}
+
 
 
 @app.get("/modules/klein/state")
@@ -1911,6 +3265,12 @@ def klein_open(payload: GaussianScene):
 @app.get("/modules/klein/logs")
 def klein_logs(lines: int = 200):
     return {"lines": _tail_log("klein", lines)}
+
+@app.post("/modules/klein/clear_logs")
+def klein_clear_logs():
+    _clear_log("klein")
+    return {"ok": True}
+
 
 
 @app.get("/modules/llm_frontend/state")
@@ -1997,11 +3357,18 @@ def llm_frontend_download(payload: LLMDownload):
 def llm_frontend_logs(lines: int = 200):
     return {"lines": _tail_log("llm_frontend", lines)}
 
+@app.post("/modules/llm_frontend/clear_logs")
+def llm_frontend_clear_logs():
+    _clear_log("llm_frontend")
+    return {"ok": True}
+
+
 
 @app.get("/modules/ml_sharp/state")
 def mlsharp_state():
     scenes = _mlsharp_list_scenes()
     current = MODULE_STATE.get("ml_sharp_last_output")
+    torch_status = _mlsharp_torch_status()
     return {
         "installed": MLSHARP_BACKEND_DIR.exists(),
         "deps_installed": (MLSHARP_BACKEND_DIR / ".deps_installed").exists(),
@@ -2009,6 +3376,8 @@ def mlsharp_state():
         "running": _is_running("ml_sharp"),
         "scenes": scenes,
         "last_output": current,
+        "torch_installed": torch_status["installed"],
+        "torch_cuda": torch_status["cuda"],
     }
 
 
@@ -2022,18 +3391,73 @@ def mlsharp_deps():
     python_path = sys.executable.replace("pythonw.exe", "python.exe")
 
     def worker():
-        _run_cmd("ml_sharp", [python_path, "-m", "pip", "install", "-r", str(req_path)], cwd=MLSHARP_BACKEND_DIR)
-        while _is_running("ml_sharp"):
-            time.sleep(0.5)
-        _run_cmd("ml_sharp", [python_path, "-m", "pip", "install", "-e", str(MLSHARP_BACKEND_DIR)], cwd=MLSHARP_BACKEND_DIR)
-        while _is_running("ml_sharp"):
-            time.sleep(0.5)
+        rc = _run_cmd_blocking(
+            "ml_sharp",
+            [python_path, "-m", "pip", "install", "-r", str(req_path)],
+            cwd=MLSHARP_BACKEND_DIR,
+        )
+        if rc != 0:
+            _append_log("ml_sharp", "Retrying pip install with --user and force reinstall...")
+            rc = _run_cmd_blocking(
+                "ml_sharp",
+                [
+                    python_path,
+                    "-m",
+                    "pip",
+                    "install",
+                    "--user",
+                    "--upgrade",
+                    "--force-reinstall",
+                    "--no-cache-dir",
+                    "-r",
+                    str(req_path),
+                ],
+                cwd=MLSHARP_BACKEND_DIR,
+            )
+        if rc == 0:
+            rc = _run_cmd_blocking(
+                "ml_sharp",
+                [python_path, "-m", "pip", "install", "-e", str(MLSHARP_BACKEND_DIR)],
+                cwd=MLSHARP_BACKEND_DIR,
+            )
+            if rc != 0:
+                _append_log("ml_sharp", "Retrying editable install with --user...")
+                rc = _run_cmd_blocking(
+                    "ml_sharp",
+                    [python_path, "-m", "pip", "install", "--user", "-e", str(MLSHARP_BACKEND_DIR)],
+                    cwd=MLSHARP_BACKEND_DIR,
+                )
         try:
             (MLSHARP_BACKEND_DIR / ".deps_installed").write_text("ok", encoding="utf-8")
         except Exception:
             pass
 
     threading.Thread(target=worker, daemon=True).start()
+    return {"ok": True}
+
+
+@app.post("/modules/ml_sharp/install_torch")
+def mlsharp_install_torch(payload: MLSharpTorchInstall):
+    python_path = sys.executable.replace("pythonw.exe", "python.exe")
+    variant = (payload.variant or "cpu").lower()
+    if variant not in ("cpu", "cu121"):
+        raise HTTPException(status_code=400, detail="Invalid torch variant")
+    index_url = "https://download.pytorch.org/whl/cpu" if variant == "cpu" else "https://download.pytorch.org/whl/cu121"
+    cmd = [
+        python_path,
+        "-m",
+        "pip",
+        "install",
+        "--user",
+        "--upgrade",
+        "--force-reinstall",
+        "--no-cache-dir",
+        "torch",
+        "torchvision",
+        "--index-url",
+        index_url,
+    ]
+    _run_cmd("ml_sharp", cmd, cwd=MLSHARP_BACKEND_DIR)
     return {"ok": True}
 
 
@@ -2059,6 +3483,9 @@ def mlsharp_run(payload: MLSharpRun):
         cmd.extend(["--device", payload.device])
 
     def worker():
+        checkpoint = _mlsharp_ensure_checkpoint()
+        if checkpoint:
+            cmd.extend(["--checkpoint-path", str(checkpoint)])
         _append_log("ml_sharp", f"$ {' '.join(cmd)}")
         try:
             proc = subprocess.Popen(
@@ -2115,9 +3542,45 @@ def mlsharp_view_scene(payload: MLSharpOpen):
     return {"url": url}
 
 
+@app.post("/modules/ml_sharp/rename_scene")
+def mlsharp_rename_scene(payload: MLSharpRename):
+    target = Path(payload.path)
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="Output folder not found")
+    name = (payload.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Invalid name")
+    invalid_chars = '<>:"/\\\\|?*'
+    for ch in invalid_chars:
+        name = name.replace(ch, "")
+    name = name.strip().strip(".")
+    if not name:
+        raise HTTPException(status_code=400, detail="Invalid name")
+    if target.resolve() == MLSHARP_OUTPUT_DIR.resolve():
+        _mlsharp_write_scene_label(target, name)
+        return {"ok": True, "path": str(target)}
+    dest = target.parent / name
+    if dest.exists():
+        raise HTTPException(status_code=400, detail="Name already exists")
+    target.rename(dest)
+    try:
+        label_path = dest / ".scene_name"
+        if label_path.exists():
+            label_path.unlink()
+    except Exception:
+        pass
+    return {"ok": True, "path": str(dest)}
+
+
 @app.get("/modules/ml_sharp/logs")
 def mlsharp_logs(lines: int = 200):
     return {"lines": _tail_log("ml_sharp", lines)}
+
+@app.post("/modules/ml_sharp/clear_logs")
+def ml_sharp_clear_logs():
+    _clear_log("ml_sharp")
+    return {"ok": True}
+
 
 
 @app.get("/modules/model_3d/state")
@@ -2135,11 +3598,104 @@ def model3d_state():
         "weights": weights,
         "installed": _model3d_is_backend_installed(backend),
         "weights_installed": _model3d_is_weights_installed(backend),
-        "running": _is_running("model_3d"),
+        "running": _is_running("model3d"),
         "output_base": str(MODEL3D_OUTPUT_BASE),
         "last_output_dir": config.get("last_output_dir"),
         "hf_token_saved": token_saved,
     }
+
+
+@app.get("/modules/model_3d/prereqs")
+def model3d_prereqs():
+    return _model3d_prereqs_status()
+
+
+@app.post("/modules/model_3d/install_pybind11")
+def model3d_install_pybind11():
+    python_path = sys.executable.replace("pythonw.exe", "python.exe")
+    _append_log("model3d", "Instalando pybind11...")
+    _run_cmd("model3d", [python_path, "-m", "pip", "install", "pybind11"])
+    return {"ok": True}
+
+
+@app.post("/modules/model_3d/open_build_tools")
+def model3d_open_build_tools():
+    webbrowser.open("https://visualstudio.microsoft.com/visual-cpp-build-tools/")
+    return {"ok": True}
+
+
+@app.post("/modules/model_3d/open_cuda_toolkit")
+def model3d_open_cuda_toolkit():
+    webbrowser.open("https://developer.nvidia.com/cuda-12-1-0-download-archive")
+    return {"ok": True}
+
+
+@app.post("/modules/model_3d/open_cuda_needed")
+def model3d_open_cuda_needed():
+    torch_cuda = _model3d_torch_cuda_version()
+    if torch_cuda.startswith("12.1"):
+        webbrowser.open("https://developer.nvidia.com/cuda-12-1-0-download-archive")
+    elif torch_cuda.startswith("12.4"):
+        webbrowser.open("https://developer.nvidia.com/cuda-12-4-0-download-archive")
+    elif torch_cuda.startswith("12.0"):
+        webbrowser.open("https://developer.nvidia.com/cuda-12-0-0-download-archive")
+    elif torch_cuda.startswith("11.8"):
+        webbrowser.open("https://developer.nvidia.com/cuda-11-8-0-download-archive")
+    else:
+        webbrowser.open("https://developer.nvidia.com/cuda-downloads")
+    return {"ok": True}
+
+
+def _model3d_safe_rel_path(rel_path: str) -> Path:
+    if not rel_path:
+        raise HTTPException(status_code=400, detail="Path required")
+    base = MODEL3D_OUTPUT_BASE.resolve()
+    target = (base / rel_path).resolve()
+    if base != target and base not in target.parents:
+        raise HTTPException(status_code=400, detail="Invalid path")
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    return target
+
+
+def _model3d_history_items() -> List[Dict]:
+    if not MODEL3D_OUTPUT_BASE.exists():
+        return []
+    items: List[Dict] = []
+    for path in MODEL3D_OUTPUT_BASE.rglob("*.glb"):
+        if not path.is_file():
+            continue
+        rel_path = path.relative_to(MODEL3D_OUTPUT_BASE)
+        stat = path.stat()
+        name = path.name if path.parent == MODEL3D_OUTPUT_BASE else path.parent.name
+        items.append(
+            {
+                "name": name,
+                "path": str(path),
+                "rel_path": str(rel_path).replace("\\", "/"),
+                "folder": str(path.parent),
+                "size_mb": round(stat.st_size / (1024 * 1024), 2),
+                "modified": stat.st_mtime,
+            }
+        )
+    items.sort(key=lambda item: item.get("modified", 0), reverse=True)
+    return items
+
+
+@app.get("/modules/model_3d/history")
+def model3d_history(limit: int = 20):
+    items = _model3d_history_items()
+    if limit and limit > 0:
+        items = items[:limit]
+    return {"items": items}
+
+
+@app.get("/modules/model_3d/preview")
+def model3d_preview(path: str = Query(...)):
+    target = _model3d_safe_rel_path(path)
+    if target.suffix.lower() != ".glb":
+        raise HTTPException(status_code=400, detail="Unsupported file")
+    return FileResponse(str(target), media_type="model/gltf-binary", filename=target.name)
 
 
 @app.post("/modules/model_3d/set_backend")
@@ -2198,6 +3754,27 @@ def model3d_uninstall_weights(payload: Model3DWeights):
     return {"ok": True}
 
 
+@app.post("/modules/model_3d/reinstall_weights")
+def model3d_reinstall_weights(payload: Model3DWeights):
+    options = _model3d_weights_options(payload.backend_key)
+    option = next((o for o in options if o["key"] == payload.weight_key), None)
+    if not option:
+        raise HTTPException(status_code=400, detail="Weights not supported")
+    local_dir = Path(option["local_dir"])
+    if local_dir.exists():
+        shutil.rmtree(local_dir, ignore_errors=True)
+    _model3d_clear_hf_cache(option["repo_id"])
+    local_dir.parent.mkdir(parents=True, exist_ok=True)
+    from huggingface_hub import snapshot_download
+    snapshot_download(
+        repo_id=option["repo_id"],
+        local_dir=str(local_dir),
+        local_dir_use_symlinks=False,
+        force_download=True,
+    )
+    return {"ok": True}
+
+
 @app.post("/modules/model_3d/run")
 def model3d_run(payload: Model3DRun):
     backend = payload.backend_key
@@ -2213,6 +3790,32 @@ def model3d_run(payload: Model3DRun):
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     python_path = sys.executable.replace("pythonw.exe", "python.exe")
     repo_path = _model3d_repo_path(backend)
+    if backend == "hunyuan3d2":
+        if not _model3d_torch_at_least("2.6"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Torch >= 2.6 requerido. Detectado: {_model3d_torch_version() or 'N/A'}. Ejecuta 'Actualizar dependencias' para actualizar PyTorch.",
+            )
+        if not _model3d_has_custom_rasterizer():
+            raise HTTPException(
+                status_code=400,
+                detail="Falta custom_rasterizer. Ejecuta 'Actualizar dependencias' para compilarlo.",
+            )
+        try:
+            from huggingface_hub import is_offline_mode  # noqa: F401
+        except Exception:
+            _append_log("model3d", "Actualizando huggingface_hub...")
+            rc = _run_cmd_blocking(
+                "model3d",
+                [python_path, "-m", "pip", "install", "--upgrade", "huggingface_hub", "--user"],
+                cwd=repo_path,
+            )
+            if rc != 0:
+                raise HTTPException(status_code=500, detail="No se pudo actualizar huggingface_hub.")
+            try:
+                from huggingface_hub import is_offline_mode  # noqa: F401
+            except Exception:
+                raise HTTPException(status_code=500, detail="huggingface_hub sigue desactualizado.")
     if backend == "stepx1":
         script_path = _model3d_write_stepx1_script(input_paths[0], output_dir, repo_path)
     elif backend == "hunyuan3d2":
@@ -2223,11 +3826,116 @@ def model3d_run(payload: Model3DRun):
         script_path = _model3d_write_sam3d_script(input_paths[0], input_paths[1], output_dir, repo_path)
     else:
         raise HTTPException(status_code=400, detail="Backend not supported")
-    _run_cmd("model3d", [python_path, str(script_path)], cwd=repo_path)
+    env = os.environ.copy()
+    env["XFORMERS_FORCE_DISABLE"] = "1"
+    _run_cmd("model3d", [python_path, str(script_path)], cwd=repo_path, env=env)
     config = _model3d_load_config()
     config["last_output_dir"] = output_dir
     _model3d_save_config(config)
     return {"ok": True, "output_dir": output_dir}
+
+
+@app.post("/modules/model_3d/update_deps")
+def model3d_update_deps():
+    python_path = sys.executable.replace("pythonw.exe", "python.exe")
+    _append_log("model3d", "Actualizando dependencias de Model 3D...")
+    _stop_proc("model3d")
+    _run_cmd("model3d", [python_path, "-m", "pip", "install", "pybind11", "pygltflib"])
+    torch_targets = [
+        ("cu121", "https://download.pytorch.org/whl/cu121"),
+        ("cu124", "https://download.pytorch.org/whl/cu124"),
+    ]
+    torch_installed = False
+    for tag, index_url in torch_targets:
+        _append_log("model3d", f"Actualizando PyTorch 2.6 ({tag})...")
+        rc = _run_cmd_blocking(
+            "model3d",
+            [
+                python_path,
+                "-m",
+                "pip",
+                "install",
+                "--upgrade",
+                "--force-reinstall",
+                "--no-cache-dir",
+                "--no-deps",
+                f"torch==2.6.0+{tag}",
+                f"torchvision==0.21.0+{tag}",
+                "--index-url",
+                index_url,
+            ],
+        )
+        if rc == 0:
+            torch_installed = True
+            break
+    if not torch_installed:
+        _append_log("model3d", "No se pudo instalar PyTorch 2.6 con CUDA.")
+        _append_log("model3d", "Cierra otras apps Python y reintenta. Si persiste, ejecuta el bridge como admin.")
+        return {"ok": True, "needs_manual": True, "reason": "torch", "prereqs": _model3d_prereqs_status()}
+    _append_log("model3d", f"PyTorch actualizado: {_model3d_torch_version()}")
+    _run_cmd(
+        "model3d",
+        [
+            python_path,
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "transformers",
+            "huggingface_hub",
+            "accelerate",
+            "safetensors",
+        ],
+        cwd=BASE_DIR,
+    )
+    _run_cmd(
+        "model3d",
+        [python_path, "-m", "pip", "uninstall", "-y", "torchao"],
+        cwd=BASE_DIR,
+    )
+    _run_cmd(
+        "model3d",
+        [python_path, "-m", "pip", "uninstall", "-y", "xformers"],
+        cwd=BASE_DIR,
+    )
+    prereqs = _model3d_prereqs_status()
+    if not prereqs.get("compiler_ok"):
+        _append_log("model3d", "Falta el compilador C++. Instala Visual Studio Build Tools (Desktop development with C++).")
+        _append_log("model3d", "https://visualstudio.microsoft.com/visual-cpp-build-tools/")
+        return {"ok": True, "needs_manual": True, "prereqs": prereqs, "reason": "compiler"}
+    if prereqs.get("torch_cuda") and prereqs.get("nvcc_version") and not prereqs.get("cuda_match"):
+        _append_log(
+            "model3d",
+            f"CUDA del sistema ({prereqs.get('nvcc_version')}) no coincide con PyTorch ({prereqs.get('torch_cuda')}).",
+        )
+        _append_log("model3d", "Instala CUDA 12.1 o usa un PyTorch compatible.")
+        _append_log("model3d", "https://developer.nvidia.com/cuda-12-1-0-download-archive")
+        return {"ok": True, "needs_manual": True, "prereqs": prereqs, "reason": "cuda"}
+    hunyuan_dir = _model3d_repo_path("hunyuan3d2")
+    if hunyuan_dir and hunyuan_dir.exists():
+        custom_dir = hunyuan_dir / "hy3dgen" / "texgen" / "custom_rasterizer"
+        if custom_dir.exists():
+            _append_log("model3d", "Compilando custom_rasterizer...")
+            _run_cmd("model3d", [python_path, "setup.py", "install"], cwd=custom_dir)
+        renderer_dir = hunyuan_dir / "hy3dgen" / "texgen" / "differentiable_renderer"
+        if renderer_dir.exists():
+            _append_log("model3d", "Compilando differentiable_renderer...")
+            _run_cmd("model3d", [python_path, "setup.py", "install"], cwd=renderer_dir)
+    return {"ok": True, "needs_manual": False, "prereqs": _model3d_prereqs_status()}
+
+
+@app.post("/modules/model_3d/restart")
+def model3d_restart():
+    _append_log("model3d", "Reiniciando proceso Model 3D...")
+    _stop_proc("model3d")
+    return {"ok": True}
+
+
+@app.post("/modules/model_3d/stop")
+def model3d_stop():
+    _append_log("model3d", "Deteniendo proceso Model 3D...")
+    _stop_proc("model3d")
+    return {"ok": True}
 
 
 @app.post("/modules/model_3d/open_output")
@@ -2242,6 +3950,12 @@ def model3d_open_output(payload: GaussianScene):
 @app.get("/modules/model_3d/logs")
 def model3d_logs(lines: int = 200):
     return {"lines": _tail_log("model3d", lines)}
+
+@app.post("/modules/model_3d/clear_logs")
+def model_3d_clear_logs():
+    _clear_log("model3d")
+    return {"ok": True}
+
 
 
 @app.post("/modules/model_3d/save_hf")
@@ -2363,6 +4077,12 @@ def neutts_open_output(payload: GaussianScene):
 def neutts_logs(lines: int = 200):
     return {"lines": _tail_log("neutts", lines)}
 
+@app.post("/modules/neutts/clear_logs")
+def neutts_clear_logs():
+    _clear_log("neutts")
+    return {"ok": True}
+
+
 
 @app.get("/modules/finetune_glm/state")
 def finetune_glm_state():
@@ -2447,6 +4167,12 @@ def finetune_glm_open_output():
 @app.get("/modules/finetune_glm/logs")
 def finetune_glm_logs(lines: int = 200):
     return {"lines": _tail_log("finetune_glm", lines)}
+
+@app.post("/modules/finetune_glm/clear_logs")
+def finetune_glm_clear_logs():
+    _clear_log("finetune_glm")
+    return {"ok": True}
+
 
 
 @app.get("/modules/proedit/state")
@@ -2634,6 +4360,12 @@ def research_ask(payload: ResearchAsk):
 def research_logs(lines: int = 200):
     return {"lines": _tail_log("research_assistant", lines)}
 
+@app.post("/modules/research_assistant/clear_logs")
+def research_assistant_clear_logs():
+    _clear_log("research_assistant")
+    return {"ok": True}
+
+
 
 @app.get("/modules/spotedit/state")
 def spotedit_state():
@@ -2760,6 +4492,12 @@ def spotedit_open_backend():
 @app.get("/modules/spotedit/logs")
 def spotedit_logs(lines: int = 200):
     return {"lines": _tail_log("spotedit", lines)}
+
+@app.post("/modules/spotedit/clear_logs")
+def spotedit_clear_logs():
+    _clear_log("spotedit")
+    return {"ok": True}
+
 
 
 if __name__ == "__main__":

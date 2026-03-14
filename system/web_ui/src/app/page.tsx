@@ -26,6 +26,28 @@ type MonitorData = {
   };
 };
 
+type HardwareSnapshot = {
+  cpu_name?: string;
+  cpu_threads?: number;
+  ram_gb?: number;
+  gpu_name?: string;
+  gpu_vram_gb?: number;
+};
+
+type MonitorMetrics = {
+  cpu_percent?: number;
+  cpu_temp_c?: number | null;
+  ram_used_gb?: number;
+  ram_available_gb?: number;
+  ram_percent?: number;
+  gpu_util?: number | null;
+  gpu_temp_c?: number | null;
+  gpu_mem_used_gb?: number | null;
+  gpu_mem_total_gb?: number | null;
+};
+
+const HARDWARE_SNAPSHOT_KEY = "unlz_hw_snapshot";
+
 const rankGpu = (name: string, vram: number) => {
   const lowered = name.toLowerCase();
   let score = vram || 0;
@@ -47,23 +69,80 @@ const pickGpu = (names: string[] = [], vram: number[] = []) => {
   return pairs[0];
 };
 
+const mergeSnapshot = (current: HardwareSnapshot | null, detected: HardwareSnapshot) => {
+  const next: HardwareSnapshot = { ...(current || {}) };
+  if (detected.cpu_name) next.cpu_name = detected.cpu_name;
+  if (typeof detected.cpu_threads === "number") next.cpu_threads = detected.cpu_threads;
+  if (typeof detected.ram_gb === "number") next.ram_gb = detected.ram_gb;
+  if (detected.gpu_name) next.gpu_name = detected.gpu_name;
+  if (typeof detected.gpu_vram_gb === "number" && detected.gpu_vram_gb > 0) next.gpu_vram_gb = detected.gpu_vram_gb;
+  return next;
+};
+
+const hasSnapshotChanged = (current: HardwareSnapshot | null, next: HardwareSnapshot) => {
+  const fields: (keyof HardwareSnapshot)[] = ["cpu_name", "cpu_threads", "ram_gb", "gpu_name", "gpu_vram_gb"];
+  return fields.some((field) => current?.[field] !== next[field]);
+};
+
 export default function Home() {
   const { translations, modules, favorites, refresh } = useApp();
   const installed = modules.filter((mod) => mod.installed);
-  const [monitor, setMonitor] = useState<MonitorData | null>(null);
+  const [hardwareSnapshot, setHardwareSnapshot] = useState<HardwareSnapshot | null>(null);
+  const [metrics, setMetrics] = useState<MonitorMetrics | null>(null);
 
   useEffect(() => {
     let active = true;
+    if (typeof window !== "undefined") {
+      try {
+        const savedSnapshot = window.localStorage.getItem(HARDWARE_SNAPSHOT_KEY);
+        if (savedSnapshot) {
+          setHardwareSnapshot(JSON.parse(savedSnapshot) as HardwareSnapshot);
+        }
+      } catch {
+        // Ignore invalid cached data.
+      }
+    }
+
     const refreshMonitor = async () => {
       try {
         const data = await fetchJson<MonitorData>("/monitor");
         if (active) {
-          setMonitor(data);
+          const gpu = pickGpu(data.system.gpu_names, data.system.vram_gb);
+          const detectedSnapshot: HardwareSnapshot = {
+            cpu_name: data.system.cpu_name,
+            cpu_threads: data.system.cpu_threads,
+            ram_gb: data.system.ram_gb,
+            gpu_name: gpu.name || undefined,
+            gpu_vram_gb: gpu.vram || undefined,
+          };
+
+          setHardwareSnapshot((current) => {
+            const next = mergeSnapshot(current, detectedSnapshot);
+            if (!hasSnapshotChanged(current, next)) {
+              return current;
+            }
+            try {
+              window.localStorage.setItem(HARDWARE_SNAPSHOT_KEY, JSON.stringify(next));
+            } catch {
+              // Ignore storage failures.
+            }
+            return next;
+          });
+
+          setMetrics({
+            cpu_percent: data.system.cpu_percent,
+            cpu_temp_c: data.system.cpu_temp_c ?? null,
+            ram_used_gb: data.system.ram_used_gb,
+            ram_available_gb: data.system.ram_available_gb,
+            ram_percent: data.system.ram_percent,
+            gpu_util: data.system.gpu_util ?? null,
+            gpu_temp_c: data.system.gpu_temp_c ?? null,
+            gpu_mem_used_gb: data.system.gpu_mem_used_gb ?? null,
+            gpu_mem_total_gb: data.system.gpu_mem_total_gb ?? null,
+          });
         }
       } catch {
-        if (active) {
-          setMonitor(null);
-        }
+        // Keep the last known snapshot/metrics when monitor isn't reachable.
       }
     };
 
@@ -119,47 +198,40 @@ export default function Home() {
         <div className="stat-card">
           <div className="stat-label">CPU</div>
           <div className="stat-value">
-            {monitor?.system?.cpu_name
-              ? `${monitor.system.cpu_name} (${monitor.system.cpu_threads} Threads)`
-              : "N/A"}
+            {hardwareSnapshot?.cpu_name
+              ? `${hardwareSnapshot.cpu_name} (${hardwareSnapshot.cpu_threads || 0} Threads)`
+              : "Detectando..."}
           </div>
           <div className="list-meta">
-            {monitor?.system?.cpu_percent !== undefined ? `Uso ${monitor.system.cpu_percent.toFixed(0)}%` : "Uso N/A"}
-            {monitor?.system?.cpu_temp_c !== null && monitor?.system?.cpu_temp_c !== undefined
-              ? ` · Temp ${monitor.system.cpu_temp_c.toFixed(0)}°C`
+            {metrics?.cpu_percent !== undefined ? `Uso ${metrics.cpu_percent.toFixed(0)}%` : ""}
+            {metrics?.cpu_temp_c !== null && metrics?.cpu_temp_c !== undefined
+              ? ` - Temp ${metrics.cpu_temp_c.toFixed(0)} C`
               : ""}
           </div>
         </div>
         <div className="stat-card">
           <div className="stat-label">RAM</div>
-          <div className="stat-value">{monitor?.system?.ram_gb ? `${monitor.system.ram_gb} GB` : "N/A"}</div>
+          <div className="stat-value">{hardwareSnapshot?.ram_gb ? `${hardwareSnapshot.ram_gb} GB` : "Detectando..."}</div>
           <div className="list-meta">
-            {monitor?.system?.ram_used_gb !== undefined ? `Usada ${monitor.system.ram_used_gb} GB` : "Usada N/A"}
-            {monitor?.system?.ram_available_gb !== undefined
-              ? ` · Libre ${monitor.system.ram_available_gb} GB`
-              : ""}
-            {monitor?.system?.ram_percent !== undefined ? ` · ${monitor.system.ram_percent.toFixed(0)}%` : ""}
+            {metrics?.ram_used_gb !== undefined ? `Usada ${metrics.ram_used_gb} GB` : ""}
+            {metrics?.ram_available_gb !== undefined ? ` - Libre ${metrics.ram_available_gb} GB` : ""}
+            {metrics?.ram_percent !== undefined ? ` - ${metrics.ram_percent.toFixed(0)}%` : ""}
           </div>
         </div>
         <div className="stat-card">
           <div className="stat-label">GPU</div>
           <div className="stat-value">
-            {monitor?.system?.gpu_names?.length
-              ? (() => {
-                  const gpu = pickGpu(monitor.system.gpu_names, monitor.system.vram_gb);
-                  return `${gpu.name} (${gpu.vram || 0} GB)`;
-                })()
-              : "N/A"}
+            {hardwareSnapshot?.gpu_name
+              ? `${hardwareSnapshot.gpu_name} (${hardwareSnapshot.gpu_vram_gb || 0} GB)`
+              : "Detectando..."}
           </div>
           <div className="list-meta">
-            {monitor?.system?.gpu_util !== null && monitor?.system?.gpu_util !== undefined
-              ? `Uso ${monitor.system.gpu_util.toFixed(0)}%`
-              : "Uso N/A"}
-            {monitor?.system?.gpu_temp_c !== null && monitor?.system?.gpu_temp_c !== undefined
-              ? ` · Temp ${monitor.system.gpu_temp_c.toFixed(0)}°C`
+            {metrics?.gpu_util !== null && metrics?.gpu_util !== undefined ? `Uso ${metrics.gpu_util.toFixed(0)}%` : ""}
+            {metrics?.gpu_temp_c !== null && metrics?.gpu_temp_c !== undefined
+              ? ` - Temp ${metrics.gpu_temp_c.toFixed(0)} C`
               : ""}
-            {monitor?.system?.gpu_mem_used_gb !== null && monitor?.system?.gpu_mem_used_gb !== undefined
-              ? ` · VRAM ${monitor.system.gpu_mem_used_gb.toFixed(1)}/${(monitor.system.gpu_mem_total_gb || 0).toFixed(1)} GB`
+            {metrics?.gpu_mem_used_gb !== null && metrics?.gpu_mem_used_gb !== undefined
+              ? ` - VRAM ${metrics.gpu_mem_used_gb.toFixed(1)}/${(metrics.gpu_mem_total_gb || 0).toFixed(1)} GB`
               : ""}
           </div>
         </div>

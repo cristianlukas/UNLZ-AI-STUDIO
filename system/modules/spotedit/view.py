@@ -67,6 +67,7 @@ class SpotEditView(ctk.CTkFrame):
 
         ctk.CTkLabel(header, text=self.tr("spotedit_title"), font=ctk.CTkFont(size=24, weight="bold")).pack(anchor="w")
         ctk.CTkLabel(header, text=self.tr("spotedit_subtitle"), text_color="gray").pack(anchor="w")
+        ctk.CTkLabel(header, text=self.tr("spotedit_plain"), text_color="gray").pack(anchor="w")
 
         actions = ctk.CTkFrame(self, fg_color="transparent")
         actions.pack(fill="x", padx=10, pady=(10, 5))

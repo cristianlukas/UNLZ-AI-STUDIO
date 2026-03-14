@@ -329,4 +329,227 @@ export const MODULE_DOCS: Record<string, ModuleDoc> = {
       "Exportar a CSV/JSON segun necesidad.",
     ],
   },
+  viga: {
+    title: "VIGA",
+    summary:
+      "Agente de vision por graficos inversos que alterna generacion, render y verificacion.",
+    what_is:
+      "Framework de analisis por sintesis que reconstruye escenas a partir de imagenes mediante un bucle generador/verificador.",
+    purpose:
+      "Automatizar reconstruccion visual programatica para escenas 2D/3D con razonamiento multimodal.",
+    use_cases: [
+      "Reconstruccion de escenas 3D desde una imagen objetivo.",
+      "Edicion de escenas Blender mediante instrucciones.",
+      "Sintesis de layouts 2D y presentaciones.",
+      "Benchmarking en BlenderBench y BlenderGym.",
+      "Prototipos de escenas dinamicas con fisica.",
+    ],
+    how_to: [
+      "Instalar el backend y los submodulos.",
+      "Instalar dependencias (agent/blender/SAM) segun la tarea.",
+      "Descargar los pesos de SAM si el flujo lo requiere.",
+      "Configurar las API keys en utils/_api_keys.py.",
+      "Ajustar rutas de entorno en utils/_path.py.",
+      "Elegir runner (dynamic o static) y definir task/model.",
+      "Ejecutar y revisar la carpeta de salida.",
+    ],
+  },
+  videomama: {
+    title: "VideoMaMa",
+    summary:
+      "Mask-guided video matting con prior generativo para separar fondo y sujeto.",
+    what_is:
+      "Modelo de matting de video que combina mascara guia y generacion para obtener alpha limpio.",
+    purpose:
+      "Extraer sujetos en video con alta calidad en dominios variados.",
+    use_cases: [
+      "Recorte de sujetos para composicion.",
+      "Postproduccion en contenido audiovisual.",
+      "Matting de videos para efectos o fondos virtuales.",
+      "Pipeline de video con control por mascara.",
+    ],
+    how_to: [
+      "Instalar el backend desde la tienda.",
+      "Ejecutar scripts/setup.sh para preparar el entorno.",
+      "Descargar checkpoints (base model + VideoMaMa) en checkpoints/.",
+      "Definir carpetas de imagen y mascara.",
+      "Ejecutar inference_onestep_folder.py desde la UI.",
+      "Revisar la salida en la carpeta configurada.",
+    ],
+  },
+  luxtts: {
+    title: "LuxTTS",
+    summary:
+      "Texto a voz ligero con clonacion de voz y salida a 48khz.",
+    what_is:
+      "Modelo TTS basado en ZipVoice con alta velocidad y buena calidad en GPU o CPU.",
+    purpose:
+      "Generar voz realista a partir de texto y un audio de referencia corto.",
+    use_cases: [
+      "Clonacion de voz para narraciones.",
+      "Generacion de audio para materiales de clase.",
+      "Prototipos rapidos de voz en apps.",
+      "TTS local con recursos moderados.",
+    ],
+    how_to: [
+      "Instalar el backend desde la tienda.",
+      "Instalar dependencias (pip -r requirements.txt).",
+      "Cargar un audio de referencia de al menos 3 segundos.",
+      "Ingresar el texto y parametros de muestreo.",
+      "Ejecutar la generacion y revisar la salida.",
+    ],
+  },
+  vibevoice_asr: {
+    title: "VibeVoice ASR",
+    summary:
+      "ASR largo con diarizacion y timestamps en una sola pasada.",
+    what_is:
+      "Modelo de reconocimiento de voz que genera quien/donde/cuando con contexto global.",
+    purpose:
+      "Transcribir audios largos con hablantes y marcas de tiempo.",
+    use_cases: [
+      "Transcripcion de clases y reuniones largas.",
+      "Analisis de entrevistas con multiples speakers.",
+      "Archivado de audio con timestamps.",
+      "Procesamiento de podcasts o seminarios.",
+    ],
+    how_to: [
+      "Instalar el backend desde la tienda.",
+      "Instalar dependencias con pip -e .[asr].",
+      "Elegir el modelo (microsoft/VibeVoice-ASR).",
+      "Seleccionar un audio de entrada.",
+      "Ejecutar la transcripcion.",
+      "Revisar la salida JSON/TXT en la carpeta de salida.",
+    ],
+  },
+  frankenmotion: {
+    title: "FrankenMotion",
+    summary:
+      "Generacion de movimiento humano por partes con composicion temporal.",
+    what_is:
+      "Framework de diffusion para controlar partes del cuerpo con prompts asincronicos.",
+    purpose:
+      "Mejorar control fino y composicion de movimiento humano por partes.",
+    use_cases: [
+      "Composicion de movimientos complejos por partes.",
+      "Generacion de acciones simultaneas asincronicas.",
+      "Investigacion de control fino en motion generation.",
+      "Experimentos con datasets de anotacion por partes.",
+    ],
+    how_to: [
+      "Instalar el backend desde la tienda.",
+      "Revisar el repo y project page para actualizaciones.",
+      "Esperar la liberacion del pipeline completo y pesos.",
+      "Seguir la documentacion cuando se publique el codigo.",
+    ],
+  },
+  flowact_r1: {
+    title: "FlowAct-R1",
+    summary:
+      "Movimiento humano guiado por flujo con razonamiento y composicion.",
+    what_is:
+      "Trabajo de investigacion sobre motion generation basado en flujo.",
+    purpose:
+      "Explorar generacion de movimiento con estructuras guiadas por flujo.",
+    use_cases: [
+      "Analisis de resultados de investigacion.",
+      "Benchmarking visual de motion generation.",
+      "Referencia para pipelines de movimiento.",
+    ],
+    how_to: [
+      "Abrir el project page desde el modulo.",
+      "Leer el paper en arXiv.",
+      "Esperar liberacion de codigo si aplica.",
+    ],
+  },
+  omni_transfer: {
+    title: "OmniTransfer",
+    summary:
+      "Framework todo-en-uno para transferencia espacio-temporal de video.",
+    what_is:
+      "Trabajo de investigacion para transferir estilo/ID y movimientos en video.",
+    purpose:
+      "Unificar transferencia de apariencia y temporal en una sola arquitectura.",
+    use_cases: [
+      "Transferencia de estilo en video.",
+      "Transferencia de movimiento/camara.",
+      "Experimentos de video-to-video.",
+      "Referencia para pipelines de generacion de video.",
+    ],
+    how_to: [
+      "Abrir el project page y revisar resultados.",
+      "Clonar el repo si deseas explorar el codigo.",
+      "Seguir el paper para detalles tecnicos.",
+      "Esperar actualizaciones sobre pesos o scripts.",
+    ],
+  },
+  qwen3_tts: {
+    title: "Qwen3-TTS",
+    summary:
+      "TTS multilenguaje con voz personalizada, diseño de voz y clonacion.",
+    what_is:
+      "Modelo de generacion de voz con control por instrucciones y perfiles de voz.",
+    purpose:
+      "Generar voz realista con control de estilo, idioma y clonacion rapida.",
+    use_cases: [
+      "Narracion de contenidos en multiples idiomas.",
+      "Diseño de voces para personajes.",
+      "Clonacion de voz con audio de referencia.",
+      "Prototipos de voz para apps y demos.",
+    ],
+    how_to: [
+      "Instalar el backend desde la tienda.",
+      "Instalar dependencias con pip -e .",
+      "Seleccionar modo (custom/design/clone).",
+      "Ingresar texto y parametros.",
+      "Si es voice clone, agregar audio y texto de referencia.",
+      "Ejecutar y revisar la salida wav.",
+    ],
+  },
+  lightonocr: {
+    title: "LightOnOCR-2-1B",
+    summary:
+      "OCR end-to-end para PDFs e imagenes con salida de texto limpio y orden natural.",
+    what_is:
+      "Modelo vision-language de 1B parametros entrenado para convertir documentos en texto sin pipelines clasicos.",
+    purpose:
+      "Extraer texto de documentos, formularios o notas escaneadas con alta precision y estructura.",
+    use_cases: [
+      "Digitalizar PDFs y apuntes escaneados.",
+      "Extraer texto de recibos, tablas y formularios.",
+      "Procesar documentos multilingues en laboratorio.",
+      "Generar texto para indexado o RAG local.",
+    ],
+    how_to: [
+      "Instalar el backend desde la tienda.",
+      "Instalar dependencias (transformers desde source, pillow, pypdfium2).",
+      "Seleccionar archivo de entrada (imagen o PDF).",
+      "Si es PDF, indicar pagina y DPI.",
+      "Elegir dispositivo y parametros de generacion.",
+      "Ejecutar OCR y abrir la carpeta de salida.",
+    ],
+  },
+  personaplex: {
+    title: "PersonaPlex",
+    summary:
+      "Modelo speech-to-speech full-duplex con control de rol y voz.",
+    what_is:
+      "Sistema basado en Moshi para conversaciones en tiempo real con voz condicionada y prompts de persona.",
+    purpose:
+      "Crear asistentes hablados con identidad consistente y baja latencia para demos o investigacion.",
+    use_cases: [
+      "Asistentes conversacionales con voz fija.",
+      "Experimentos de roles (customer service, docencia, soporte).",
+      "Evaluacion offline sobre audios de entrada.",
+      "Demos de conversacion en tiempo real.",
+    ],
+    how_to: [
+      "Instalar el backend desde la tienda.",
+      "Aceptar licencia del modelo en Hugging Face y copiar el token.",
+      "Instalar dependencias con pip (moshi/., accelerate).",
+      "Seleccionar voz y wav de entrada.",
+      "Definir prompt de rol si aplica.",
+      "Ejecutar y revisar salida wav/json.",
+    ],
+  },
 };

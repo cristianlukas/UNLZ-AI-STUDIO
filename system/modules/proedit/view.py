@@ -42,6 +42,7 @@ class ProEditView(ctk.CTkFrame):
 
         ctk.CTkLabel(header, text=self.tr("proedit_title"), font=ctk.CTkFont(size=24, weight="bold")).pack(anchor="w")
         ctk.CTkLabel(header, text=self.tr("proedit_subtitle"), text_color="gray").pack(anchor="w")
+        ctk.CTkLabel(header, text=self.tr("proedit_plain"), text_color="gray").pack(anchor="w")
 
         notice = ctk.CTkFrame(self)
         notice.pack(fill="x", padx=10, pady=(20, 10))

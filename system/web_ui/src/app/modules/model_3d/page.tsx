@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Script from "next/script";
 import AppShell from "@/components/AppShell";
-import { fetchJson } from "@/lib/webBridge";
+import { fetchJson, WEB_BRIDGE_URL } from "@/lib/webBridge";
 import { useApp } from "@/context/AppContext";
 
 type WeightOption = {
@@ -21,6 +22,23 @@ type Model3DState = {
   output_base: string;
   last_output_dir?: string;
   hf_token_saved: boolean;
+};
+
+type Model3DHistoryItem = {
+  name: string;
+  rel_path: string;
+  folder: string;
+  size_mb?: number;
+  modified?: number;
+};
+
+type Model3DPrereqs = {
+  pybind11_ok: boolean;
+  compiler_ok: boolean;
+  nvcc_version: string;
+  torch_cuda: string;
+  torch_version?: string;
+  cuda_match: boolean;
 };
 
 const BACKENDS = [
@@ -46,6 +64,10 @@ export default function Model3DPage() {
   const [weightKey, setWeightKey] = useState("");
   const [hfToken, setHfToken] = useState("");
   const [logs, setLogs] = useState<string[]>([]);
+  const [history, setHistory] = useState<Model3DHistoryItem[]>([]);
+  const [previewRel, setPreviewRel] = useState<string>("");
+  const [prereqs, setPrereqs] = useState<Model3DPrereqs | null>(null);
+  const [prereqAlert, setPrereqAlert] = useState<string>("");
 
   const refresh = async () => {
     const data = await fetchJson<Model3DState>("/modules/model_3d/state");
@@ -64,12 +86,35 @@ export default function Model3DPage() {
     setLogs(data.lines);
   };
 
+  const refreshPrereqs = async () => {
+    const data = await fetchJson<Model3DPrereqs>("/modules/model_3d/prereqs");
+    setPrereqs(data);
+  };
+
+  const refreshHistory = async () => {
+    const data = await fetchJson<{ items: Model3DHistoryItem[] }>("/modules/model_3d/history");
+    const items = data.items || [];
+    setHistory(items);
+    if (!previewRel && items.length) {
+      setPreviewRel(items[0].rel_path);
+    }
+  };
+
+  const clearLogs = async () => {
+    await fetchJson("/modules/model_3d/clear_logs", { method: "POST" });
+    setLogs([]);
+  };
+
   useEffect(() => {
     refresh();
     refreshLogs();
+    refreshHistory();
+    refreshPrereqs();
     const id = setInterval(() => {
       refresh();
       refreshLogs();
+      refreshHistory();
+      refreshPrereqs();
     }, 4000);
     return () => clearInterval(id);
   }, []);
@@ -120,6 +165,14 @@ export default function Model3DPage() {
     refresh();
   };
 
+  const reinstallWeights = async () => {
+    await fetchJson("/modules/model_3d/reinstall_weights", {
+      method: "POST",
+      body: JSON.stringify({ backend_key: backend, weight_key: weightKey }),
+    });
+    refresh();
+  };
+
   const runGeneration = async () => {
     const paths = inputPaths
       .split("\n")
@@ -136,10 +189,60 @@ export default function Model3DPage() {
     });
   };
 
+  const updateDeps = async () => {
+    const res = await fetchJson<{ needs_manual?: boolean; reason?: string }>("/modules/model_3d/update_deps", {
+      method: "POST",
+    });
+    if (res?.needs_manual) {
+      if (res.reason === "compiler") {
+        setPrereqAlert(
+          translations.model3d_prereq_alert_compiler ||
+            "Falta el compilador C++. Instala Visual Studio Build Tools (Desktop development with C++)."
+        );
+      } else if (res.reason === "cuda") {
+        setPrereqAlert(
+          translations.model3d_prereq_alert_cuda ||
+            "CUDA del sistema no coincide con PyTorch. Instala CUDA 12.1 o usa un PyTorch compatible."
+        );
+      } else if (res.reason === "torch") {
+        setPrereqAlert(
+          translations.model3d_prereq_alert_torch ||
+            "No se pudo actualizar PyTorch a 2.6. Revisa el registro para mas detalles."
+        );
+      } else {
+        setPrereqAlert(translations.model3d_prereq_alert_generic || "Faltan prerequisitos para compilar.");
+      }
+    } else {
+      setPrereqAlert("");
+    }
+    refreshPrereqs();
+  };
+
+  const openCudaNeeded = async () => {
+    await fetchJson("/modules/model_3d/open_cuda_needed", { method: "POST" });
+  };
+
+  const restartRun = async () => {
+    await fetchJson("/modules/model_3d/restart", { method: "POST" });
+    refresh();
+  };
+
+  const stopRun = async () => {
+    await fetchJson("/modules/model_3d/stop", { method: "POST" });
+    refresh();
+  };
+
   const openOutput = async () => {
     await fetchJson("/modules/model_3d/open_output", {
       method: "POST",
       body: JSON.stringify({ path: outputDir || state?.last_output_dir || state?.output_base }),
+    });
+  };
+
+  const openHistoryFolder = async (path: string) => {
+    await fetchJson("/modules/model_3d/open_output", {
+      method: "POST",
+      body: JSON.stringify({ path }),
     });
   };
 
@@ -158,12 +261,52 @@ export default function Model3DPage() {
     refresh();
   };
 
+  const appendPath = (path: string) => {
+    if (!path) return;
+    setInputPaths((prev) => (prev ? `${prev}\n${path}` : path));
+  };
+
+  const pickFile = async () => {
+    const res = await fetchJson<{ path?: string; paths?: string[] }>("/ui/pick_file", {
+      method: "POST",
+      body: JSON.stringify({ title: translations.model3d_input_label || "Input paths", initial_dir: "" }),
+    });
+    if (res.paths?.length) {
+      res.paths.forEach((path) => appendPath(path));
+    } else if (res.path) {
+      appendPath(res.path);
+    }
+  };
+
+  const pickFolder = async () => {
+    const res = await fetchJson<{ path: string }>("/ui/pick_folder", {
+      method: "POST",
+      body: JSON.stringify({ title: translations.model3d_input_label || "Input paths", initial_dir: "" }),
+    });
+    appendPath(res.path);
+  };
+
+  const previewItem = useMemo(() => {
+    if (!history.length) return null;
+    return history.find((item) => item.rel_path === previewRel) || history[0];
+  }, [history, previewRel]);
+
+  const previewUrl = useMemo(() => {
+    if (!previewItem) return "";
+    return `${WEB_BRIDGE_URL}/modules/model_3d/preview?path=${encodeURIComponent(previewItem.rel_path)}`;
+  }, [previewItem]);
+
   return (
     <AppShell>
+      <Script
+        src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"
+        strategy="afterInteractive"
+      />
       <div className="page-header">
         <div className="eyebrow">{translations.model3d_title || "3D Models"}</div>
         <h1>{translations.model3d_title || "3D Model Generation"}</h1>
         <p>{translations.model3d_subtitle || "Generate 3D assets with multiple backends."}</p>
+        <p>{translations.model3d_plain || "Creates a 3D model from one or more images."}</p>
       </div>
       {state?.running && <div className="banner">{translations.status_in_progress || "En progreso"}</div>}
 
@@ -202,17 +345,36 @@ export default function Model3DPage() {
                 placeholder={translations.model3d_input_placeholder || "Paste one path per line"}
               />
             </label>
+            <div className="list-actions">
+              <button className="ghost" onClick={pickFile}>
+                {translations.model3d_btn_select_files || "Select files"}
+              </button>
+              <button className="ghost" onClick={pickFolder}>
+                {translations.model3d_btn_select_folder || "Select folder"}
+              </button>
+            </div>
             <label>
               {translations.model3d_output_label || "Output"}
               <input value={outputDir} onChange={(event) => setOutputDir(event.target.value)} />
             </label>
           </div>
           <div className="list-actions" style={{ marginTop: "1rem" }}>
-            <button className="primary" onClick={runGeneration} disabled={!state?.installed}>
+            <button className="primary" onClick={runGeneration} disabled={!state?.installed || state?.running}>
               {translations.model3d_btn_generate || "Generate"}
             </button>
             <button className="ghost" onClick={openOutput}>
               {translations.model3d_btn_open_output || "Open output"}
+            </button>
+          </div>
+          <div className="list-actions" style={{ marginTop: "0.6rem" }}>
+            <button className="ghost" onClick={updateDeps}>
+              {translations.model3d_btn_update_deps || "Update dependencies"}
+            </button>
+            <button className="ghost" onClick={stopRun} disabled={!state?.running}>
+              {translations.model3d_btn_stop || "Stop"}
+            </button>
+            <button className="ghost" onClick={restartRun} disabled={!state?.running}>
+              {translations.model3d_btn_restart || "Restart"}
             </button>
           </div>
         </div>
@@ -237,6 +399,9 @@ export default function Model3DPage() {
             <button className="ghost" onClick={installWeights}>
               {translations.model3d_btn_install_weights || "Install weights"}
             </button>
+            <button className="ghost" onClick={reinstallWeights}>
+              {translations.model3d_btn_reinstall_weights || "Reinstall weights"}
+            </button>
             <button className="ghost" onClick={uninstallWeights}>
               {translations.model3d_btn_uninstall_weights || "Uninstall weights"}
             </button>
@@ -256,6 +421,43 @@ export default function Model3DPage() {
                 )}
               </select>
             </label>
+          </div>
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h2>{translations.model3d_prereq_title || "Prerequisites"}</h2>
+        </div>
+        <div className="panel-body">
+          {prereqAlert && <div className="banner">{prereqAlert}</div>}
+          <div className="list-actions" style={{ flexWrap: "wrap" }}>
+            {prereqs?.torch_version ? (
+              <span className="pill">Torch: {prereqs.torch_version}</span>
+            ) : null}
+            <span className="pill">
+              {translations.model3d_prereq_pybind11 || "pybind11"}:{" "}
+              {prereqs?.pybind11_ok ? "OK" : "Falta"}
+            </span>
+            <span className="pill">
+              {translations.model3d_prereq_compiler || "Compiler"}:{" "}
+              {prereqs?.compiler_ok ? "OK" : "Falta"}
+            </span>
+            <span className="pill">
+              CUDA NVCC: {prereqs?.nvcc_version || "N/A"}
+            </span>
+            <span className="pill">
+              Torch CUDA: {prereqs?.torch_cuda || "N/A"}
+            </span>
+            <span className="pill">
+              {translations.model3d_prereq_cuda_match || "CUDA compatible"}:{" "}
+              {prereqs?.cuda_match ? "OK" : "No"}
+            </span>
+          </div>
+          <div className="list-actions" style={{ marginTop: "0.8rem" }}>
+            <button className="ghost" onClick={openCudaNeeded}>
+              {translations.model3d_btn_open_cuda_needed || "Instalar CUDA necesario"}
+            </button>
           </div>
         </div>
       </section>
@@ -297,10 +499,66 @@ export default function Model3DPage() {
 
       <section className="panel">
         <div className="panel-header">
-          <h2>{translations.model3d_log_label || "Log"}</h2>
+          <h2>{translations.model3d_preview_title || "Preview"}</h2>
         </div>
         <div className="panel-body">
-          <pre className="empty">{logs.length ? logs.join("\n") : "No logs yet."}</pre>
+          {previewUrl ? (
+            <div style={{ display: "grid", gap: "0.8rem" }}>
+              <model-viewer
+                src={previewUrl}
+                style={{ width: "100%", height: "360px", background: "var(--panel-soft)" }}
+                camera-controls
+                auto-rotate
+                exposure="0.9"
+                shadow-intensity="1"
+              />
+              {previewItem?.name && <div className="list-meta">{previewItem.name}</div>}
+            </div>
+          ) : (
+            <div className="empty">{translations.model3d_preview_empty || "No preview available yet."}</div>
+          )}
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h2>{translations.model3d_history_title || "History"}</h2>
+        </div>
+        <div className="panel-body">
+          {history.length ? (
+            <div className="list">
+              {history.map((item) => (
+                <div key={item.rel_path} className="list-row">
+                  <div>
+                    <div className="list-title">{item.name}</div>
+                    {item.size_mb ? <div className="list-meta">{item.size_mb} MB</div> : null}
+                  </div>
+                  <div className="list-actions">
+                    <button className="ghost" onClick={() => setPreviewRel(item.rel_path)}>
+                      {translations.model3d_btn_preview || "Ver"}
+                    </button>
+                    <button className="ghost" onClick={() => openHistoryFolder(item.folder)}>
+                      {translations.model3d_btn_open_folder || "Abrir carpeta"}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="empty">{translations.model3d_history_empty || "No outputs yet."}</div>
+          )}
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h2>{translations.model3d_log_label || "Log"}</h2>
+          <button className="ghost" onClick={clearLogs}>
+            {translations.log_clear_btn || "Clear log"}
+          </button>
+        </div>
+        <div className="panel-body">
+          <pre className="empty log-view">{logs.length ? logs.join("\n") : "No logs yet."}</pre>
         </div>
       </section>
     </AppShell>

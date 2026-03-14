@@ -32,6 +32,11 @@ export default function HYWorldPage() {
     setLogs(data.lines);
   };
 
+  const clearLogs = async () => {
+    await fetchJson("/modules/hyworld/clear_logs", { method: "POST" });
+    setLogs([]);
+  };
+
   useEffect(() => {
     refresh();
     refreshLogs();
@@ -87,6 +92,7 @@ export default function HYWorldPage() {
         <div className="eyebrow">{translations.hyworld_title || "HunyuanWorld-Mirror"}</div>
         <h1>{translations.hyworld_title || "HunyuanWorld-Mirror"}</h1>
         <p>{translations.hyworld_subtitle || "3D reconstruction with HunyuanWorld-Mirror."}</p>
+        <p>{translations.hyworld_plain || "Reconstructs 3D scenes from photos or video."}</p>
       </div>
       {state?.running && <div className="banner">{translations.status_in_progress || "En progreso"}</div>}
 
@@ -170,9 +176,12 @@ export default function HYWorldPage() {
       <section className="panel">
         <div className="panel-header">
           <h2>Logs</h2>
+          <button className="ghost" onClick={clearLogs}>
+            {translations.log_clear_btn || "Clear log"}
+          </button>
         </div>
         <div className="panel-body">
-          <pre className="empty">{logs.length ? logs.join("\n") : "No logs yet."}</pre>
+          <pre className="empty log-view">{logs.length ? logs.join("\n") : "No logs yet."}</pre>
         </div>
       </section>
     </AppShell>

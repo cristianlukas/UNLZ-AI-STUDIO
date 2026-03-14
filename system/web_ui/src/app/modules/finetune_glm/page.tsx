@@ -43,6 +43,11 @@ export default function FinetuneGLMPage() {
     setLogs(data.lines);
   };
 
+  const clearLogs = async () => {
+    await fetchJson("/modules/finetune_glm/clear_logs", { method: "POST" });
+    setLogs([]);
+  };
+
   useEffect(() => {
     refresh();
     refreshLogs();
@@ -87,6 +92,7 @@ export default function FinetuneGLMPage() {
         <div className="eyebrow">{translations.finetune_title || "GLM-4.7 Fine-tune"}</div>
         <h1>{translations.finetune_title || "GLM-4.7 Fine-tune"}</h1>
         <p>{translations.finetune_subtitle || "Assistant to fine-tune GLM-4.7-Flash locally with Unsloth."}</p>
+        <p>{translations.finetune_plain || "Trains a local model with your own data."}</p>
       </div>
       {state?.running && <div className="banner">{translations.status_in_progress || "En progreso"}</div>}
 
@@ -214,9 +220,12 @@ export default function FinetuneGLMPage() {
       <section className="panel">
         <div className="panel-header">
           <h2>{translations.finetune_log_label || "Log"}</h2>
+          <button className="ghost" onClick={clearLogs}>
+            {translations.log_clear_btn || "Clear log"}
+          </button>
         </div>
         <div className="panel-body">
-          <pre className="empty">{logs.length ? logs.join("\n") : "No logs yet."}</pre>
+          <pre className="empty log-view">{logs.length ? logs.join("\n") : "No logs yet."}</pre>
         </div>
       </section>
     </AppShell>

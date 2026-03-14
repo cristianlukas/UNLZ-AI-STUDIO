@@ -36,6 +36,11 @@ export default function SpotEditPage() {
     setLogs(data.lines);
   };
 
+  const clearLogs = async () => {
+    await fetchJson("/modules/spotedit/clear_logs", { method: "POST" });
+    setLogs([]);
+  };
+
   useEffect(() => {
     refresh();
     refreshLogs();
@@ -93,6 +98,7 @@ export default function SpotEditPage() {
         <div className="eyebrow">{translations.spotedit_title || "SpotEdit"}</div>
         <h1>{translations.spotedit_title || "SpotEdit"}</h1>
         <p>{translations.spotedit_subtitle || "Selective region editing with Diffusion Transformers."}</p>
+        <p>{translations.spotedit_plain || "Lets you change a part of an image without redoing it."}</p>
       </div>
       {state?.running && <div className="banner">{translations.status_in_progress || "En progreso"}</div>}
 
@@ -188,9 +194,12 @@ export default function SpotEditPage() {
       <section className="panel">
         <div className="panel-header">
           <h2>{translations.spotedit_log_label || "Log"}</h2>
+          <button className="ghost" onClick={clearLogs}>
+            {translations.log_clear_btn || "Clear log"}
+          </button>
         </div>
         <div className="panel-body">
-          <pre className="empty">{logs.length ? logs.join("\n") : "No logs yet."}</pre>
+          <pre className="empty log-view">{logs.length ? logs.join("\n") : "No logs yet."}</pre>
         </div>
       </section>
     </AppShell>

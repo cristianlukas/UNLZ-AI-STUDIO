@@ -112,7 +112,8 @@ export default function MonitorPage() {
       <div className="page-header">
         <div className="eyebrow">{translations.monitor_title || "AI Endpoints"}</div>
         <h1>{translations.monitor_title || "AI Endpoints"}</h1>
-        <p>Controla los servicios locales y revisa el hardware activo.</p>
+        <p>{translations.mod_monitor_desc || "Controla los servicios locales y revisa el hardware activo."}</p>
+        <p>{translations.mod_monitor_plain || "Shows a simple view of your PC health and whether services are running."}</p>
       </div>
 
       

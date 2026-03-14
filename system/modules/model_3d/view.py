@@ -128,6 +128,7 @@ class Model3DView(ctk.CTkFrame):
 
         ctk.CTkLabel(header, text=self.tr("model3d_title"), font=ctk.CTkFont(size=24, weight="bold")).pack(anchor="w")
         ctk.CTkLabel(header, text=self.tr("model3d_subtitle"), text_color="gray").pack(anchor="w")
+        ctk.CTkLabel(header, text=self.tr("model3d_plain"), text_color="gray").pack(anchor="w")
 
         input_frame = ctk.CTkFrame(self)
         input_frame.pack(fill="x", padx=10, pady=(10, 5))

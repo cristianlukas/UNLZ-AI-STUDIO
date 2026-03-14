@@ -31,6 +31,11 @@ export default function IncluIAPage() {
     setLogs(data.lines);
   };
 
+  const clearLogs = async () => {
+    await fetchJson("/modules/inclu_ia/clear_logs", { method: "POST" });
+    setLogs([]);
+  };
+
   useEffect(() => {
     refresh();
     refreshLogs();
@@ -66,6 +71,7 @@ export default function IncluIAPage() {
         <div className="eyebrow">{translations.mod_incluia_title || "Inclu-IA"}</div>
         <h1>{translations.mod_incluia_title || "Inclu-IA"}</h1>
         <p>{translations.mod_incluia_desc || "Real-time subtitling for classrooms."}</p>
+        <p>{translations.mod_incluia_plain || "Live captions so everyone can follow the class."}</p>
       </div>
       {state?.running && <div className="banner">{translations.status_in_progress || "En progreso"}</div>}
 
@@ -110,9 +116,12 @@ export default function IncluIAPage() {
       <section className="panel">
         <div className="panel-header">
           <h2>Logs</h2>
+          <button className="ghost" onClick={clearLogs}>
+            {translations.log_clear_btn || "Clear log"}
+          </button>
         </div>
         <div className="panel-body">
-          <pre className="empty">{logs.length ? logs.join("\n") : "No logs yet."}</pre>
+          <pre className="empty log-view">{logs.length ? logs.join("\n") : "No logs yet."}</pre>
         </div>
       </section>
     </AppShell>

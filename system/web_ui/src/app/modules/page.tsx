@@ -86,11 +86,13 @@ export default function ModulesPage() {
                       {favorites.includes(module.key) ? `* ${module.title}` : module.title}
                     </div>
                     <div className="list-meta">{module.description}</div>
+                    {module.plain && <div className="list-meta">{module.plain}</div>}
                   </div>
                   <div className="list-actions">
                     <span className="pill">
                       {CATEGORY_LABELS[module.category] || module.category}
                     </span>
+                    {module.compute && <span className="pill">{module.compute}</span>}
                     {busyKey === module.key && <span className="pill">En progreso</span>}
                     {module.installed && (
                       <button
@@ -103,15 +105,21 @@ export default function ModulesPage() {
                           : translations.fav_add || "Agregar a favoritos"}
                       </button>
                     )}
-                    <button
-                      onClick={() => onInstall(module.key, module.installed)}
-                      className={module.installed ? "ghost" : "primary"}
-                      disabled={busyKey === module.key}
-                    >
-                      {module.installed
-                        ? translations.svc_uninstall || "Uninstall"
-                        : translations.btn_install || "Install"}
-                    </button>
+                    {module.coming_soon ? (
+                      <span className="pill">
+                        {translations.pill_coming_soon || "Coming soon"}
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => onInstall(module.key, module.installed)}
+                        className={module.installed ? "ghost" : "primary"}
+                        disabled={busyKey === module.key}
+                      >
+                        {module.installed
+                          ? translations.svc_uninstall || "Uninstall"
+                          : translations.btn_install || "Install"}
+                      </button>
+                    )}
                     <Link className="ghost" href={`/docs/${module.key}`}>
                       {translations.btn_docs || "Documentacion"}
                     </Link>
