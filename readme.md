@@ -121,6 +121,10 @@ reset_defaults.bat
 ```powershell
 python system\studio_gui.py
 ```
+Lanzador recomendado con rutas relativas:
+```powershell
+start_normal_ui.bat
+```
 También podés usar los accesos directos:
 - `UNLZ AI Studio.lnk`
 
@@ -138,6 +142,7 @@ python system\web_bridge.py
 ```
 Acceso rápido:
 - `system\run_web_ui.bat` (Web UI + Web Bridge)
+- `start_web_ui.bat` (wrapper en la raíz con rutas relativas)
 - `UNLZ AI Studio Web.lnk`
 
 ---
