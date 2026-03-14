@@ -5,6 +5,8 @@ import threading
 import subprocess
 import shutil
 import socket
+import re
+import time
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox
@@ -59,6 +61,9 @@ class MLSharpView(ctk.CTkFrame):
 
         actions = ctk.CTkFrame(self, fg_color="transparent")
         actions.pack(fill="x", padx=10, pady=(10, 5))
+
+        self.btn_download_backend = ctk.CTkButton(actions, text=self.tr("mlsharp_btn_download_backend"), command=self.download_backend)
+        self.btn_download_backend.pack(side="left", padx=5)
 
         self.btn_deps = ctk.CTkButton(actions, text=self.tr("mlsharp_btn_deps"), command=self.install_deps)
         self.btn_deps.pack(side="left", padx=5)
@@ -154,16 +159,20 @@ class MLSharpView(ctk.CTkFrame):
 
     def refresh_buttons(self):
         disabled = "disabled" if self._busy else "normal"
-        for btn in (self.btn_deps, self.btn_open, self.btn_repo, self.btn_run, self.btn_open_output, self.btn_refresh_scenes):
+        for btn in (self.btn_download_backend, self.btn_deps, self.btn_open, self.btn_repo, self.btn_run, self.btn_open_output, self.btn_refresh_scenes):
             btn.configure(state=disabled)
 
         if self._busy:
             return
 
         if not self.backend_dir.exists():
+            self.btn_download_backend.configure(state="normal")
             self.btn_deps.configure(state="disabled")
             self.btn_open.configure(state="disabled")
         else:
+            self.btn_download_backend.configure(state="disabled")
+            self.btn_deps.configure(state="normal")
+            self.btn_open.configure(state="normal")
             if self.deps_marker.exists():
                 self.btn_deps.configure(text=self.tr("mlsharp_btn_deps_installed"))
             else:
@@ -220,35 +229,106 @@ class MLSharpView(ctk.CTkFrame):
 
     def install_deps(self):
         if not self.backend_dir.exists():
-            messagebox.showwarning(self.tr("status_error"), self.tr("mlsharp_msg_backend_missing"))
+            messagebox.showwarning(self.tr("status_error"), "Por favor descarga el backend primero")
             return
+        
         req_path = self.backend_dir / "requirements.txt"
         if not req_path.exists():
             messagebox.showwarning(self.tr("status_error"), self.tr("mlsharp_msg_requirements_missing"))
             return
         python_path = sys.executable.replace("pythonw.exe", "python.exe")
-        self.log(self.tr("mlsharp_msg_deps_installing"))
         self.set_busy(True)
+        
+        # Log immediately
+        self.log("="*60)
+        self.log(">>> Starting dependency installation...")
+        self.log(f">>> Python: {python_path}")
+        self.log(f">>> Requirements: {req_path}")
+        self.log("="*60)
 
         def worker():
-            code = self.run_command([python_path, "-m", "pip", "install", "-r", str(req_path)])
-            if code == 0:
-                code = self.run_command([python_path, "-m", "pip", "install", "-e", str(self.backend_dir)])
-            self.after(0, lambda: self.on_deps_done(code))
+            try:
+                # Use -u flag for unbuffered output from pip
+                code = self.run_command([python_path, "-u", "-m", "pip", "install", "-r", str(req_path)])
+                if code == 0:
+                    self.safe_log("-"*60)
+                    self.safe_log(">>> Installing package in development mode...")
+                    self.safe_log("-"*60)
+                    code = self.run_command([python_path, "-u", "-m", "pip", "install", "-e", str(self.backend_dir)])
+                self.after(0, lambda: self.on_deps_done(code))
+            except Exception as e:
+                self.safe_log(f"[WORKER ERROR] {e}")
+                import traceback
+                self.safe_log(traceback.format_exc())
+                self.after(0, lambda: self.on_deps_done(1))
 
         threading.Thread(target=worker, daemon=True).start()
 
     def on_deps_done(self, returncode):
         self.set_busy(False)
+        self.log("="*60)
         if returncode == 0:
-            self.log(self.tr("mlsharp_msg_deps_done"))
+            self.log("✓ Dependencies installed successfully!")
             try:
                 self.deps_marker.write_text("ok", encoding="utf-8")
             except Exception:
                 pass
         else:
-            self.log(self.tr("mlsharp_msg_failed").format(returncode))
+            self.log(f"✗ Installation failed (exit code: {returncode}).")
+            self.log("Please check the output above for errors.")
+        self.log("="*60)
         self.refresh_buttons()
+
+    def clone_backend(self):
+        """Clone the ML-Sharp repository from GitHub."""
+        self.set_busy(True)
+        self.log("="*60)
+        self.log("Starting ML-Sharp backend download...")
+        self.log(f"Target directory: {self.backend_dir}")
+        self.log("="*60)
+        
+        def worker():
+            try:
+                # Create parent directory
+                self.backend_dir.parent.mkdir(parents=True, exist_ok=True)
+                self.safe_log(f"Created parent directory: {self.backend_dir.parent}")
+                
+                # Clone the repository
+                self.safe_log("Cloning from: https://github.com/apple/ml-sharp.git")
+                cmd = ["git", "clone", "https://github.com/apple/ml-sharp.git", str(self.backend_dir)]
+                process = subprocess.Popen(
+                    cmd,
+                    cwd=str(self.backend_dir.parent),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+                )
+                for line in process.stdout:
+                    self.safe_log(line.rstrip())
+                returncode = process.wait()
+                
+                self.safe_log("="*60)
+                if returncode == 0:
+                    self.safe_log("✓ Repository cloned successfully!")
+                    self.safe_log(f"Backend location: {self.backend_dir}")
+                    self.safe_log("You can now install dependencies.")
+                else:
+                    self.safe_log(f"✗ Failed to clone repository (exit code: {returncode}).")
+                self.safe_log("="*60)
+            except Exception as exc:
+                self.safe_log("="*60)
+                self.safe_log(f"✗ Error cloning repository: {exc}")
+                self.safe_log("="*60)
+            finally:
+                self.after(0, lambda: self.set_busy(False))
+                self.after(0, self.refresh_buttons)
+        
+        threading.Thread(target=worker, daemon=True).start()
+
+    def download_backend(self):
+        """Download the ML-Sharp backend."""
+        self.clone_backend()
 
     def run_predict(self):
         input_path = self.input_entry.get().strip()
@@ -272,7 +352,14 @@ class MLSharpView(ctk.CTkFrame):
             return
 
         cmd = [sharp_cmd, "predict", "-i", input_path, "-o", str(output_dir)]
-        if self.render_var.get():
+        wants_render = self.render_var.get()
+        if wants_render and os.name == "nt" and shutil.which("cl") is None:
+            self.safe_log(
+                "Rendering requested but MSVC compiler (cl.exe) was not found. "
+                "Retrying without --render. Install Visual Studio Build Tools (C++ build tools) to enable rendering on Windows."
+            )
+            wants_render = False
+        if wants_render:
             cmd.append("--render")
 
         device = self.map_device_value(self.device_var.get())
@@ -286,6 +373,10 @@ class MLSharpView(ctk.CTkFrame):
 
     def run_predict_worker(self, cmd, output_dir: Path):
         returncode = self.run_command(cmd)
+        if returncode != 0 and "--render" in cmd:
+            self.safe_log("Render step failed. Retrying without --render to export 3D outputs.")
+            retry_cmd = [arg for arg in cmd if arg != "--render"]
+            returncode = self.run_command(retry_cmd)
         self.after(0, lambda: self.on_predict_done(returncode, output_dir))
 
     def on_predict_done(self, returncode, output_dir: Path):
@@ -299,30 +390,75 @@ class MLSharpView(ctk.CTkFrame):
 
     def run_command(self, cmd):
         try:
+            self.safe_log(f"[CMD] {' '.join(cmd)}")
+            self.safe_log(f"[CWD] {self.backend_dir}")
+            
             process = subprocess.Popen(
                 cmd,
                 cwd=str(self.backend_dir),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                bufsize=1,
                 creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
             )
+
             for line in process.stdout:
                 self.safe_log(line.rstrip())
             process.wait()
-            return process.returncode
+            
+            returncode = process.returncode
+            if returncode == 0:
+                self.safe_log("Operation complete.")
+            else:
+                self.safe_log(f"[EXIT CODE] {returncode}")
+            return returncode
         except Exception as exc:
-            self.safe_log(f"{self.tr('status_error')}: {exc}")
+            msg = f"[ERROR] {self.tr('status_error')}: {exc}"
+            self.safe_log(msg)
+            import traceback
+            self.safe_log(traceback.format_exc())
             return 1
 
     def safe_log(self, message):
-        self.after(0, lambda: self.log(message))
+        def log_in_main():
+            try:
+                # Log to app logger if available
+                if hasattr(self.app, 'logger'):
+                    level, normalized = self._normalize_log_for_app_logger(str(message))
+                    self.app.logger.log(level, normalized)
+                # Also log locally
+                self.log(message)
+            except Exception as e:
+                print(f"Error logging message: {e}")
+        self.after(0, log_in_main)
+
+    def _normalize_log_for_app_logger(self, message):
+        """Avoid double timestamp/level when subprocess output is already formatted."""
+        pattern = r"^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2},\d{3}\s+\|\s+(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s+\|\s+(.*)$"
+        match = re.match(pattern, message)
+        if not match:
+            return (20, message)  # logging.INFO
+
+        level_name = match.group(1)
+        payload = match.group(2).strip()
+        level_map = {
+            "DEBUG": 10,
+            "INFO": 20,
+            "WARNING": 30,
+            "ERROR": 40,
+            "CRITICAL": 50,
+        }
+        return (level_map.get(level_name, 20), payload)
 
     def log(self, message):
-        self.log_textbox.configure(state="normal")
-        self.log_textbox.insert("end", message + "\n")
-        self.log_textbox.see("end")
-        self.log_textbox.configure(state="disabled")
+        try:
+            self.log_textbox.configure(state="normal")
+            self.log_textbox.insert("end", str(message) + "\n")
+            self.log_textbox.see("end")
+            self.log_textbox.configure(state="disabled")
+        except Exception as e:
+            print(f"Log error: {e}")
 
     def start_model_check(self):
         threading.Thread(target=self.check_model, daemon=True).start()
@@ -433,32 +569,46 @@ class MLSharpView(ctk.CTkFrame):
     def view_scene(self):
         if not self.current_output_dir:
             return
-        url = self._start_viewer_server(Path(self.current_output_dir))
+        output_dir = Path(self.current_output_dir)
+        if not self.ensure_viewer_files(output_dir, refresh_index=True):
+            messagebox.showwarning(self.tr("status_error"), "Viewer files are missing. Run prediction again or check logs.")
+            return
+        url = self._start_viewer_server(output_dir)
         self.log(f"Opening viewer at {url}")
         import webbrowser
         webbrowser.open(url)
 
-    def setup_viewer(self, output_dir: Path):
+    def ensure_viewer_files(self, output_dir: Path, refresh_index: bool = False) -> bool:
+        """Ensure gaussians/index.html and gaussians/scene.ply exist for the web viewer."""
         try:
             gaussians_dir = output_dir / "gaussians"
             gaussians_dir.mkdir(parents=True, exist_ok=True)
+
             viewer_dst = gaussians_dir / "index.html"
             scene_dst = gaussians_dir / "scene.ply"
 
-            ply_files = [f for f in output_dir.iterdir() if f.suffix == ".ply"]
-            if not ply_files:
-                self.log("Warning: No .ply file found in output.")
-                return
-
-            src_ply = ply_files[0]
-            shutil.move(str(src_ply), str(scene_dst))
-            self.log(f"Moved {src_ply.name} to {scene_dst}")
-
-            if self.viewer_template.exists():
+            if refresh_index or not viewer_dst.exists():
+                if not self.viewer_template.exists():
+                    self.log(f"Error: viewer_template.html not found at {self.viewer_template}")
+                    return False
                 shutil.copy(str(self.viewer_template), str(viewer_dst))
-                self.log(f"Viewer created at: {viewer_dst}")
+
+            if not scene_dst.exists():
+                ply_files = [f for f in output_dir.iterdir() if f.is_file() and f.suffix.lower() == ".ply"]
+                if ply_files:
+                    shutil.move(str(ply_files[0]), str(scene_dst))
+
+            return scene_dst.exists() and viewer_dst.exists()
+        except Exception as exc:
+            self.log(f"Error preparing viewer files: {exc}")
+            return False
+
+    def setup_viewer(self, output_dir: Path):
+        try:
+            if self.ensure_viewer_files(output_dir, refresh_index=True):
+                self.log(f"Viewer ready at: {output_dir / 'gaussians' / 'index.html'}")
             else:
-                self.log(f"Error: viewer_template.html not found at {self.viewer_template}")
+                self.log("Warning: Could not prepare viewer files.")
         except Exception as exc:
             self.log(f"Error setting up viewer: {exc}")
         finally:
@@ -482,7 +632,7 @@ class MLSharpView(ctk.CTkFrame):
             stderr=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
         )
-        return f"http://localhost:{port}/gaussians/index.html"
+        return f"http://localhost:{port}/gaussians/index.html?t={int(time.time())}"
 
     def resolve_output_dir(self):
         output_path = self.output_entry.get().strip()

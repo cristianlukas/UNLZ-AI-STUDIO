@@ -5,6 +5,7 @@ import subprocess
 import time
 import logging
 import importlib.metadata
+import re
 from pathlib import Path
 from tkinter import messagebox
 
@@ -179,15 +180,34 @@ class KleinView(ctk.CTkFrame):
                     importlib.metadata.version(pkg)
             except Exception:
                 return False
+        if self.has_incompatible_torchao():
+            return False
         return True
+
+    def has_incompatible_torchao(self):
+        try:
+            torch_version = importlib.metadata.version("torch")
+            torchao_version = importlib.metadata.version("torchao")
+        except Exception:
+            return False
+        torch_base = re.split(r"[+.-]", torch_version)[0:3]
+        torchao_base = re.split(r"[+.-]", torchao_version)[0:2]
+        torch_norm = ".".join(torch_base)
+        torchao_norm = ".".join(torchao_base)
+        return torch_norm.startswith("2.5.0") and torchao_norm.startswith("0.16")
 
     def install_deps(self):
         python_path = sys.executable.replace("pythonw.exe", "python.exe")
         packages = ["diffusers", "transformers", "accelerate", "safetensors", "huggingface_hub", "pillow"]
+        uninstall_then_install = (
+            "import subprocess, sys; "
+            "subprocess.call([sys.executable, '-m', 'pip', 'uninstall', '-y', 'torchao']); "
+            f"raise SystemExit(subprocess.call([sys.executable, '-m', 'pip', 'install', {', '.join(repr(p) for p in packages)}]))"
+        )
         self.log(self.tr("klein_msg_installing_deps"))
         self.set_busy(True)
         self._current_action = "deps"
-        self.run_process([python_path, "-m", "pip", "install", *packages], on_done=self.on_process_done)
+        self.run_process([python_path, "-c", uninstall_then_install], on_done=self.on_process_done)
 
     def download_model(self):
         if not self.check_deps_available():

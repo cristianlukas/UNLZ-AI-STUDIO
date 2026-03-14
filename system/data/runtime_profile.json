@@ -1,17 +1,21 @@
 {
-  "profile_key": "cpu",
+  "profile_key": "baja",
   "system": {
-    "python_version": "3.12.9",
-    "platform": "Windows 11",
-    "cpu_name": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+    "python_version": "3.11.9",
+    "platform": "Windows 10",
+    "cpu_name": "AMD Ryzen 7 3800X 8-Core Processor",
     "cpu_threads": 16,
-    "ram_gb": 127.09,
-    "gpu_count": 0,
-    "gpu_names": [],
-    "vram_gb_per_gpu": [],
-    "cuda_available": false
+    "ram_gb": 31.93,
+    "gpu_count": 1,
+    "gpu_names": [
+      "NVIDIA GeForce RTX 2060"
+    ],
+    "vram_gb_per_gpu": [
+      6.0
+    ],
+    "cuda_available": true
   },
-  "ts": 1768495869.3721142,
+  "ts": 1773272569.9918637,
   "auto_selected": true,
   "custom_overrides": {},
   "endpoint_config": {},

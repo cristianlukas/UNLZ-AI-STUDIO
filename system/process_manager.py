@@ -110,7 +110,7 @@ class GpuProcessManager:
                 "--host", config.get("host", "127.0.0.1"),
                 "--port", str(config["port"]),
                 "--ctx-size", str(config.get("ctx_size", 2048)),
-                "--n-gpu-layers", str(config.get("n_gpu_layers", 99)),
+                "--n-gpu-layers", str(config.get("n_gpu_layers", 8)),
                 "--threads", str(config.get("threads", 4)),
                 "--no-mmap"
             ]
@@ -119,35 +119,47 @@ class GpuProcessManager:
             
         elif mode_type == "vlm":
             logging.info(f"Configuring {key} (llama-server VLM) on port {config['port']}...")
-            # VLM now uses llama-server with mmproj
-            # Path: C:\models\qwen2.5-vl-gguf\Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf
-            # mmproj: C:\models\qwen2.5-vl-gguf\mmproj-F16.gguf (Standard Unsloth pattern)
-            
-            model_dir = Path(r"C:\models\qwen2.5-vl-gguf")
-            model_path = model_dir / "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf"
-            
-            # Find existing mmproj (Order matters: check F16 first, then BF16, then legacy)
-            mmproj_candidates = ["mmproj-F16.gguf", "mmproj-BF16.gguf", "mmproj-model-f16.gguf", "Qwen_Qwen2.5-VL-7B-Instruct-mmproj-f16.gguf"]
+            default_model = Path(r"C:\models\qwen2.5-vl-gguf\Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf")
+            model_path = Path(str(config.get("model_path") or default_model))
+            if not model_path.exists():
+                raise FileNotFoundError(f"VLM model not found: {model_path}")
+
             mmproj_path = None
-            for cand in mmproj_candidates:
-                p = model_dir / cand
-                if p.exists():
-                    mmproj_path = p
-                    break
-            
-            if not mmproj_path:
-                 # Fallback to default if somehow nothing found but we want to try starting
-                 mmproj_path = model_dir / "mmproj-F16.gguf"
+            if config.get("mmproj_path"):
+                candidate = Path(str(config["mmproj_path"]))
+                if candidate.exists():
+                    mmproj_path = candidate
+
+            if mmproj_path is None:
+                model_dir = model_path.parent
+                mmproj_candidates = [
+                    "mmproj-F16.gguf",
+                    "mmproj-BF16.gguf",
+                    "mmproj-model-f16.gguf",
+                    "Qwen_Qwen2.5-VL-7B-Instruct-mmproj-f16.gguf",
+                ]
+                for cand in mmproj_candidates:
+                    p = model_dir / cand
+                    if p.exists():
+                        mmproj_path = p
+                        break
+
+            if mmproj_path is None:
+                raise FileNotFoundError(f"VLM mmproj not found near model: {model_path.parent}")
 
             cmd = [
                 LLAMA_SERVER_EXE,
                 "-m", str(model_path),
-                "--mmproj", str(mmproj_path), 
+                "--mmproj", str(mmproj_path),
                 "--host", config.get("host", "127.0.0.1"),
                 "--port", str(config["port"]),
-                "--n-gpu-layers", str(config.get("n_gpu_layers", 99)),
-                "--ctx-size", "4096", # Vision needs context
-                "--threads", "4"
+                #En perfiles con mas recursos, se pueden aumentar estas capas para mejor rendimiento, pero 8 es un buen punto de partida para VRAM limitada.
+                "--n-gpu-layers", str(config.get("n_gpu_layers", 8)),
+                "--ctx-size", str(config.get("ctx_size", 8192)),
+                "--threads", str(config.get("threads", 4)),
+                "--n-predict", str(config.get("n_predict", 2048)),
+                # Increased batch size from 8 to 512 to prevent "failed to find memory slot" errors during image decoding
+                "--batch-size", str(config.get("batch_size", 512)),
             ]
             wait_target = ("health", config.get("host", "127.0.0.1"), config["port"])
             

@@ -20,6 +20,7 @@ type Model3DState = {
   running: boolean;
   output_base: string;
   last_output_dir?: string;
+  hunyuan_enable_texture?: boolean;
   hf_token_saved: boolean;
 };
 
@@ -44,6 +45,7 @@ export default function Model3DPage() {
   const [inputPaths, setInputPaths] = useState("");
   const [outputDir, setOutputDir] = useState("");
   const [weightKey, setWeightKey] = useState("");
+  const [hunyuanEnableTexture, setHunyuanEnableTexture] = useState(false);
   const [hfToken, setHfToken] = useState("");
   const [logs, setLogs] = useState<string[]>([]);
 
@@ -51,6 +53,7 @@ export default function Model3DPage() {
     const data = await fetchJson<Model3DState>("/modules/model_3d/state");
     setState(data);
     setBackend(data.backend);
+    setHunyuanEnableTexture(Boolean(data.hunyuan_enable_texture));
     if (!outputDir) {
       setOutputDir(data.last_output_dir || data.output_base);
     }
@@ -132,6 +135,7 @@ export default function Model3DPage() {
         input_paths: paths,
         input_mode: inputMode,
         output_dir: outputDir || null,
+        enable_texture: backend === "hunyuan3d2" ? hunyuanEnableTexture : null,
       }),
     });
   };
@@ -206,6 +210,18 @@ export default function Model3DPage() {
               {translations.model3d_output_label || "Output"}
               <input value={outputDir} onChange={(event) => setOutputDir(event.target.value)} />
             </label>
+            {backend === "hunyuan3d2" && (
+              <label>
+                Hunyuan mode
+                <select
+                  value={hunyuanEnableTexture ? "textured" : "geometry"}
+                  onChange={(event) => setHunyuanEnableTexture(event.target.value === "textured")}
+                >
+                  <option value="geometry">Geometry only (faster)</option>
+                  <option value="textured">Geometry + texture (slower)</option>
+                </select>
+              </label>
+            )}
           </div>
           <div className="list-actions" style={{ marginTop: "1rem" }}>
             <button className="primary" onClick={runGeneration} disabled={!state?.installed}>

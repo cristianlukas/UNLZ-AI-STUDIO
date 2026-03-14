@@ -4,6 +4,14 @@ import os
 from pathlib import Path
 
 import torch
+
+if not torch.cuda.is_available():
+    raise SystemExit(
+        "ERROR: No CUDA GPU detected.\n"
+        "Unsloth (required for GLM-4.7 fine-tuning) only works on CUDA-capable NVIDIA GPUs.\n"
+        "Make sure your GPU drivers and a CUDA-enabled version of PyTorch are installed."
+    )
+
 from datasets import load_dataset
 from transformers import TrainingArguments
 from trl import SFTTrainer

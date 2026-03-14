@@ -145,12 +145,19 @@ class LLMFrontendView(ctk.CTkFrame):
 
     def _start_server_bg(self, model_path):
         try:
+            # Get settings from active profile
+            profile = self.profile_manager.active_profile
+            if profile.user_configurable:
+                settings = self.profile_manager.get_custom_settings()
+            else:
+                settings = self.profile_manager._derive_launch_settings(profile)
+            
             config = {
                 "model_path": str(model_path),
                 "port": self.chat_port,
                 "host": "127.0.0.1",
-                "ctx_size": 2048, # Simple default
-                "n_gpu_layers": 99 # Try max
+                "ctx_size": settings.get("ctx_size", 2048),
+                "n_gpu_layers": settings.get("n_gpu_layers", 2),
             }
             self.manager.start_process("llm_chat", config)
             self.after(0, self.check_server_state)
@@ -174,13 +181,25 @@ class LLMFrontendView(ctk.CTkFrame):
 
     def _run_inference(self, prompt):
         try:
+            # Get endpoint settings for LLM
+            endpoint_settings = self.profile_manager.get_endpoint_settings("llm")
+            max_tokens = endpoint_settings.get("max_tokens", 512)
+            temperature = endpoint_settings.get("temperature", 0.7)
+            
+            # Calculate dynamic timeout based on expected tokens
+            # Rule: 2 seconds base + 0.15 seconds per token
+            timeout = max(120, int(2 + (max_tokens * 0.15)))
+            
             payload = {
                 "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.7,
-                "max_tokens": 1024
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "top_p": endpoint_settings.get("top_p", 0.9),
+                "top_k": endpoint_settings.get("top_k", 40),
+                "repeat_penalty": endpoint_settings.get("repeat_penalty", 1.1)
             }
             
-            response = requests.post(self.api_url, json=payload, timeout=60)
+            response = requests.post(self.api_url, json=payload, timeout=timeout)
             response.raise_for_status()
             data = response.json()
             

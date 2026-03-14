@@ -72,12 +72,16 @@ class Model3DView(ctk.CTkFrame):
         self.app = app
         self.tr = app.tr
 
-        self.app_root = Path(__file__).resolve().parents[4]
-        self.data_dir = Path(__file__).resolve().parents[3] / "data" / "model_3d"
+        self.app_root = Path(__file__).resolve().parents[3]
+        self.system_root = self.app_root / "system"
+        # Keep compatibility with installs created by older path resolution.
+        self.legacy_system_root = self.app_root.parent / "system"
+
+        self.data_dir = self.system_root / "data" / "model_3d"
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.config_path = self.data_dir / "config.json"
 
-        self.output_base = self.app_root / "system" / "3d-out"
+        self.output_base = self.system_root / "3d-out"
         self.output_base.mkdir(parents=True, exist_ok=True)
 
         self.config = self.load_config()
@@ -113,6 +117,16 @@ class Model3DView(ctk.CTkFrame):
 
         self.weight_options = []
         self.weight_var = ctk.StringVar(value="")
+        self.hunyuan_texture_mode_labels = {
+            False: "Geometry only (faster)",
+            True: "Geometry + texture (slower)",
+        }
+        self.hunyuan_texture_enabled = bool(
+            self.config.get("hunyuan_enable_texture", self.default_hunyuan_texture_enabled())
+        )
+        self.hunyuan_texture_var = ctk.StringVar(
+            value=self.hunyuan_texture_mode_labels[self.hunyuan_texture_enabled]
+        )
         self._task_running = False
         self.hf_token_var = ctk.StringVar()
         self.last_output_dir = self.config.get("last_output_dir")
@@ -191,6 +205,15 @@ class Model3DView(ctk.CTkFrame):
         self.status_label = ctk.CTkLabel(settings, text=self.tr("model3d_status_idle"), text_color="gray")
         self.status_label.grid(row=4, column=1, sticky="w", padx=10, pady=(0, 5))
 
+        ctk.CTkLabel(settings, text="Hunyuan mode").grid(row=5, column=0, sticky="w", padx=10, pady=(0, 8))
+        self.hunyuan_mode_menu = ctk.CTkOptionMenu(
+            settings,
+            values=list(self.hunyuan_texture_mode_labels.values()),
+            variable=self.hunyuan_texture_var,
+            command=self.on_hunyuan_mode_change,
+        )
+        self.hunyuan_mode_menu.grid(row=5, column=1, sticky="w", padx=10, pady=(0, 8))
+
         output_frame = ctk.CTkFrame(self)
         output_frame.pack(fill="x", padx=10, pady=(10, 5))
         output_frame.grid_columnconfigure(1, weight=1)
@@ -253,6 +276,13 @@ class Model3DView(ctk.CTkFrame):
         self.update_backend_ui()
         self.update_weights_menu()
 
+    def on_hunyuan_mode_change(self, selected_label):
+        self.hunyuan_texture_enabled = (
+            selected_label == self.hunyuan_texture_mode_labels[True]
+        )
+        self.config["hunyuan_enable_texture"] = self.hunyuan_texture_enabled
+        self.save_config()
+
     def update_backend_ui(self):
         if self.backend_key in ("stepx1", "hunyuan3d2", "sam3d"):
             self.input_mode_var.set(self.input_mode_labels["single"])
@@ -265,6 +295,9 @@ class Model3DView(ctk.CTkFrame):
         self.install_weights_button.configure(state=weights_state)
         self.uninstall_weights_button.configure(state=weights_state)
         self.weights_menu.configure(state=weights_state)
+
+        hunyuan_state = "normal" if self.backend_key == "hunyuan3d2" else "disabled"
+        self.hunyuan_mode_menu.configure(state=hunyuan_state)
         self.update_action_buttons()
 
     def get_input_mode(self):
@@ -400,6 +433,7 @@ class Model3DView(ctk.CTkFrame):
 
     def start_generate(self):
         self.config["backend"] = self.backend_key
+        self.config["hunyuan_enable_texture"] = self.hunyuan_texture_enabled
         self.save_config()
 
         mode = self.get_input_mode()
@@ -452,7 +486,7 @@ class Model3DView(ctk.CTkFrame):
                 return
             thread = threading.Thread(
                 target=self.run_hunyuan,
-                args=(self.input_paths[0], output_dir, repo_path, python_path),
+                args=(self.input_paths[0], output_dir, repo_path, python_path, self.hunyuan_texture_enabled),
                 daemon=True,
             )
             thread.start()
@@ -500,10 +534,10 @@ class Model3DView(ctk.CTkFrame):
         finally:
             self.after(0, lambda: self.generate_button.configure(state="normal"))
 
-    def run_hunyuan(self, input_path, output_dir, repo_path, python_path):
+    def run_hunyuan(self, input_path, output_dir, repo_path, python_path, enable_texture):
         try:
             self.safe_log(self.tr("model3d_msg_running"))
-            script_path = self.write_hunyuan_script(input_path, output_dir, repo_path)
+            script_path = self.write_hunyuan_script(input_path, output_dir, repo_path, enable_texture)
             ok = self.run_script_with_retry(script_path, repo_path, python_path)
             if ok:
                 self.safe_log(self.tr("model3d_msg_finished"))
@@ -572,45 +606,133 @@ class Model3DView(ctk.CTkFrame):
             f.write(script)
         return str(script_path)
 
-    def write_hunyuan_script(self, input_path, output_dir, repo_path):
+    def write_hunyuan_script(self, input_path, output_dir, repo_path, enable_texture):
         script_path = self.data_dir / "hunyuan_run.py"
+        texture_mode_line = (
+            "os.environ[\"HUNYUAN_FORCE_TEXTURE\"] = \"1\"\n"
+            if enable_texture
+            else "os.environ[\"HUNYUAN_NO_TEXTURE\"] = \"1\"\n"
+        )
+        texture_mode_log = (
+            "print(\"[Hunyuan] Mode: geometry + texture\", flush=True)\n"
+            if enable_texture
+            else "print(\"[Hunyuan] Mode: geometry only\", flush=True)\n"
+        )
         script = (
             "import os\n"
             "import sys\n"
+            "import time\n"
             "sys.path.insert(0, r\"{repo}\")\n"
             "os.environ[\"HF_HUB_DISABLE_PROGRESS_BARS\"] = \"1\"\n"
+            "{texture_mode_line}"
+            "print(\"[Hunyuan] Starting pipeline\", flush=True)\n"
+            "{texture_mode_log}"
+            "import torch\n"
+            "from PIL import Image\n"
             "from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline\n"
             "from hy3dgen.texgen import Hunyuan3DPaintPipeline\n"
-            "input_image = r\"{input}\"\n"
+            "input_image_path = r\"{input}\"\n"
             "out_dir = r\"{output}\"\n"
             "os.makedirs(out_dir, exist_ok=True)\n"
             "mesh_path = os.path.join(out_dir, \"mesh.glb\")\n"
+            "with Image.open(input_image_path) as img:\n"
+            "    input_image = img.convert(\"RGBA\")\n"
             "weights_dir = r\"{weights}\"\n"
             "base = \"tencent/Hunyuan3D-2\"\n"
-            "local_ok = False\n"
+            "base_is_local = False\n"
             "if weights_dir and os.path.exists(weights_dir):\n"
             "    os.environ[\"HY3DGEN_MODELS\"] = weights_dir\n"
-            "    for name in (\n"
-            "        \"hunyuan3d-dit-v2-0\",\n"
-            "        \"hunyuan3d-dit-v2-0-fast\",\n"
-            "        \"hunyuan3d-dit-v2-0-turbo\",\n"
-            "    ):\n"
-            "        path = os.path.join(weights_dir, \"tencent\", \"Hunyuan3D-2\", name)\n"
-            "        if os.path.exists(path):\n"
-            "            local_ok = True\n"
+            "    local_candidates = [\n"
+            "        os.path.join(weights_dir, \"hunyuan3d-dit-v2-0\"),\n"
+            "        os.path.join(weights_dir, \"hunyuan3d-dit-v2-0-fast\"),\n"
+            "        os.path.join(weights_dir, \"hunyuan3d-dit-v2-0-turbo\"),\n"
+            "        os.path.join(weights_dir, \"tencent\", \"Hunyuan3D-2\", \"hunyuan3d-dit-v2-0\"),\n"
+            "        os.path.join(weights_dir, \"tencent\", \"Hunyuan3D-2\", \"hunyuan3d-dit-v2-0-fast\"),\n"
+            "        os.path.join(weights_dir, \"tencent\", \"Hunyuan3D-2\", \"hunyuan3d-dit-v2-0-turbo\"),\n"
+            "    ]\n"
+            "    if any(os.path.exists(path) for path in local_candidates):\n"
+            "        base = weights_dir\n"
+            "        base_is_local = True\n"
+            "        os.environ[\"HF_HUB_OFFLINE\"] = \"1\"\n"
+            "shape_subfolder = os.environ.get(\"HUNYUAN_SHAPE_SUBFOLDER\", \"\").strip()\n"
+            "if not shape_subfolder:\n"
+            "    for candidate in (\"hunyuan3d-dit-v2-0-turbo\", \"hunyuan3d-dit-v2-0-fast\", \"hunyuan3d-dit-v2-0\"):\n"
+            "        if not base_is_local or os.path.exists(os.path.join(base, candidate)):\n"
+            "            shape_subfolder = candidate\n"
             "            break\n"
-            "if local_ok:\n"
-            "    os.environ[\"HF_HUB_OFFLINE\"] = \"1\"\n"
-            "pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(base)\n"
-            "mesh = pipeline(image=input_image)[0]\n"
+            "if not shape_subfolder:\n"
+            "    shape_subfolder = \"hunyuan3d-dit-v2-0\"\n"
+            "default_steps = 30\n"
+            "if \"turbo\" in shape_subfolder:\n"
+            "    default_steps = 5\n"
+            "elif \"fast\" in shape_subfolder:\n"
+            "    default_steps = 20\n"
+            "num_steps = int(os.environ.get(\"HUNYUAN_STEPS\", str(default_steps)))\n"
+            "print(f\"[Hunyuan] Loading shape model: base={{base}} subfolder={{shape_subfolder}} steps={{num_steps}}\", flush=True)\n"
+            "pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(base, subfolder=shape_subfolder)\n"
+            "if hasattr(pipeline, \"enable_flashvdm\") and \"turbo\" in shape_subfolder:\n"
+            "    try:\n"
+            "        pipeline.enable_flashvdm(mc_algo=\"mc\")\n"
+            "        print(\"[Hunyuan] FlashVDM enabled\", flush=True)\n"
+            "    except Exception as exc:\n"
+            "        print(f\"[Hunyuan] FlashVDM unavailable: {{exc}}\", flush=True)\n"
+            "print(\"[Hunyuan] Generating geometry...\", flush=True)\n"
+            "t0 = time.time()\n"
+            "mesh = pipeline(image=input_image, num_inference_steps=num_steps, guidance_scale=5.0)[0]\n"
+            "print(f\"[Hunyuan] Geometry done in {{time.time() - t0:.1f}}s\", flush=True)\n"
             "mesh.export(mesh_path)\n"
-            "paint = Hunyuan3DPaintPipeline.from_pretrained(base)\n"
-            "mesh = paint(mesh, image=input_image)\n"
-            "mesh.export(os.path.join(out_dir, \"mesh_textured.glb\"))\n"
-        ).format(repo=repo_path, input=input_path, output=output_dir, weights=self.get_weights_dir("hunyuan3d2"))
+            "print(f\"[Hunyuan] Saved geometry: {{mesh_path}}\", flush=True)\n"
+            "vram_gb = None\n"
+            "if torch.cuda.is_available():\n"
+            "    try:\n"
+            "        vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)\n"
+            "    except Exception:\n"
+            "        vram_gb = None\n"
+            "force_texture = os.environ.get(\"HUNYUAN_FORCE_TEXTURE\", \"0\") == \"1\"\n"
+            "disable_texture = os.environ.get(\"HUNYUAN_NO_TEXTURE\", \"0\") == \"1\"\n"
+            "enable_texture = force_texture or (not disable_texture and (vram_gb is None or vram_gb >= 12.0))\n"
+            "if not enable_texture:\n"
+            "    print(f\"[Hunyuan] Skipping texture stage (VRAM={{vram_gb}} GB). Set HUNYUAN_FORCE_TEXTURE=1 to force.\", flush=True)\n"
+            "else:\n"
+            "    print(\"[Hunyuan] Loading texture model...\", flush=True)\n"
+            "    if torch.cuda.is_available():\n"
+            "        torch.cuda.empty_cache()\n"
+            "    paint = Hunyuan3DPaintPipeline.from_pretrained(base, subfolder=\"hunyuan3d-paint-v2-0-turbo\")\n"
+            "    if hasattr(paint, \"enable_model_cpu_offload\"):\n"
+            "        try:\n"
+            "            paint.enable_model_cpu_offload()\n"
+            "        except Exception:\n"
+            "            pass\n"
+            "    print(\"[Hunyuan] Generating texture...\", flush=True)\n"
+            "    t1 = time.time()\n"
+            "    mesh = paint(mesh, image=input_image)\n"
+            "    tex_path = os.path.join(out_dir, \"mesh_textured.glb\")\n"
+            "    mesh.export(tex_path)\n"
+            "    print(f\"[Hunyuan] Texture done in {{time.time() - t1:.1f}}s\", flush=True)\n"
+            "    print(f\"[Hunyuan] Saved textured mesh: {{tex_path}}\", flush=True)\n"
+        ).format(
+            repo=repo_path,
+            input=input_path,
+            output=output_dir,
+            weights=self.get_weights_dir("hunyuan3d2"),
+            texture_mode_line=texture_mode_line,
+            texture_mode_log=texture_mode_log,
+        )
         with open(script_path, "w", encoding="utf-8") as f:
             f.write(script)
         return str(script_path)
+
+    def default_hunyuan_texture_enabled(self):
+        try:
+            profile_manager = getattr(self.app, "profile_manager", None)
+            if profile_manager and getattr(profile_manager, "system_info", None):
+                info = profile_manager.system_info
+                vram = getattr(info, "vram_gb_per_gpu", [])
+                if vram:
+                    return float(vram[0]) >= 12.0
+        except Exception:
+            pass
+        return False
 
     def write_sam3d_script(self, image_path, mask_path, output_dir, repo_path):
         script_path = self.data_dir / "sam3d_run.py"
@@ -889,13 +1011,35 @@ class Model3DView(ctk.CTkFrame):
         for pkg in packages:
             if pkg == "skimage":
                 mapped.append("scikit-image")
-            else:
-                mapped.append(pkg)
+                continue
+            if pkg == "cv2":
+                mapped.append("opencv-python")
+                continue
+            if pkg == "PIL":
+                mapped.append("pillow")
+                continue
+            if pkg == "yaml":
+                mapped.append("PyYAML")
+                continue
+            mapped.append(pkg)
         mapped = list(dict.fromkeys(mapped))
         self.safe_log(self.tr("model3d_msg_installing_deps").format(", ".join(mapped)))
         cmd = [python_path, "-m", "pip", "install", "--upgrade"] + mapped
         code, _ = self.execute_python(cmd, cwd=str(self.app_root))
         return code == 0
+
+    def get_system_roots(self):
+        roots = [self.system_root]
+        if self.legacy_system_root != self.system_root:
+            roots.append(self.legacy_system_root)
+        return roots
+
+    def resolve_system_path(self, *parts):
+        for root in self.get_system_roots():
+            candidate = root.joinpath(*parts)
+            if candidate.exists():
+                return candidate
+        return self.system_root.joinpath(*parts)
 
     def set_task_status(self, running, detail_text=None):
         self._task_running = running
@@ -1014,7 +1158,7 @@ class Model3DView(ctk.CTkFrame):
         }.get(backend_key)
         if not repo_name:
             return None
-        return str(self.app_root / "system" / "3d-backends" / repo_name)
+        return str(self.resolve_system_path("3d-backends", repo_name))
 
     def get_repo_url(self, backend_key):
         return {
@@ -1025,7 +1169,7 @@ class Model3DView(ctk.CTkFrame):
 
     def get_weights_options(self, backend_key):
         suffix = self.tr("suffix_recommended")
-        base_dir = self.app_root / "system" / "3d-weights"
+        base_dir = self.resolve_system_path("3d-weights")
         if backend_key == "stepx1":
             return [{
                 "key": "default",
@@ -1056,7 +1200,7 @@ class Model3DView(ctk.CTkFrame):
         }.get(backend_key)
         if not name:
             return ""
-        return str(self.app_root / "system" / "3d-weights" / name)
+        return str(self.resolve_system_path("3d-weights", name))
 
     def resolve_repo_path(self, backend_key):
         repo_name = {
@@ -1067,19 +1211,23 @@ class Model3DView(ctk.CTkFrame):
         if not repo_name:
             return None
 
-        candidates = [
-            self.app_root / "system" / "3d-backends" / repo_name,
-            self.app_root / "system" / repo_name,
+        candidates = []
+        for root in self.get_system_roots():
+            candidates.extend([
+                root / "3d-backends" / repo_name,
+                root / repo_name,
+            ])
+        candidates.extend([
             self.app_root / repo_name,
             self.app_root / "backends" / repo_name,
-        ]
+        ])
         for path in candidates:
             if path.exists():
                 return str(path)
         return None
 
     def warn_missing_repo(self, name, url):
-        expected = self.app_root / "system" / "3d-backends" / name
+        expected = self.system_root / "3d-backends" / name
         message = self.tr("model3d_msg_missing_repo").format(name, expected, url)
         messagebox.showwarning(self.tr("status_error"), message)
 

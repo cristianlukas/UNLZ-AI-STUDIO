@@ -58,6 +58,31 @@ export const MODULE_DOCS: Record<string, ModuleDoc> = {
       "Usar la seccion de descargas para agregar nuevos GGUF.",
     ],
   },
+  vlm_frontend: {
+    title: "Vision AI",
+    summary:
+      "Analisis visual local con modelos VLM para describir imagenes, responder preguntas y gestionar modelos GGUF.",
+    what_is:
+      "Interfaz web para cargar una imagen, escribir un prompt y obtener respuestas de un modelo vision-lenguaje ejecutado localmente.",
+    purpose:
+      "Permitir analisis de imagenes sin servicios externos, con control de servidor, modelos y descargas desde el mismo entorno.",
+    use_cases: [
+      "Describir escenas o elementos visibles en una imagen.",
+      "Extraer informacion visual para documentacion tecnica.",
+      "Asistir tareas de revision de capturas o prototipos.",
+      "Comparar comportamiento entre modelos VLM locales.",
+      "Probar prompts visuales para flujos multimodales.",
+    ],
+    how_to: [
+      "Ir a Vision AI desde el catalogo de modulos.",
+      "Seleccionar un modelo GGUF compatible y cargar el servidor.",
+      "Subir una imagen desde tu equipo.",
+      "Escribir la pregunta o instruccion de analisis.",
+      "Presionar Analizar y esperar la respuesta.",
+      "Gestionar modelos desde la pestaña de modelos y descargas.",
+      "Detener el servidor al finalizar para liberar recursos.",
+    ],
+  },
   inclu_ia: {
     title: "Inclu-IA",
     summary:

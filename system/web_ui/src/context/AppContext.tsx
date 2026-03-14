@@ -14,6 +14,7 @@ export type ModuleMeta = {
 export type AppSettings = {
   language: string;
   model_dir?: string;
+  vlm_model_dir?: string;
   show_logs?: boolean;
   theme?: string;
 };

@@ -3,70 +3,347 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SharpSplat Viewer</title>
-    <script type="module" src="https://unpkg.com/@splat/viewer@1.0.0/dist/viewer.js"></script>
+    <title>Sharp PLY Viewer</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #000; }
-        #canvas { width: 100vw; height: 100vh; display: block; }
-        #info {
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            color: white;
-            font-family: sans-serif;
-            background: rgba(0,0,0,0.5);
-            padding: 10px;
-            border-radius: 5px;
-            pointer-events: none;
+        html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #0b0f14; }
+        #status {
+            position: fixed;
+            top: 12px;
+            left: 12px;
+            z-index: 10;
+            color: #dbe7ff;
+            font: 13px/1.4 Segoe UI, Arial, sans-serif;
+            background: rgba(5, 10, 18, 0.75);
+            border: 1px solid rgba(120, 160, 220, 0.4);
+            border-radius: 8px;
+            padding: 10px 12px;
+            max-width: 400px;
+            backdrop-filter: blur(3px);
         }
+        #status strong { display: block; margin-bottom: 6px; color: #fff; }
     </style>
 </head>
 <body>
-    <div id="info">
-        <h2>SharpSplat Viewer</h2>
-        <p>Loading scene.ply...</p>
-        <p>Controls: Left Click to Rotate, Right Click to Pan, Scroll to Zoom</p>
+    <div id="status">
+        <strong>Sharp Viewer</strong>
+        <div id="statusText">Loading scene.ply...</div>
+        <div>Controls: Left drag rotate, Right drag pan, Wheel zoom</div>
     </div>
-    
-    <!-- Using a generic viewer implementation. 
-         If this specific package doesn't exist, we will use a more robust one below. 
-         Actually, let's use a known working implementation script directly. -->
-    
+
     <script type="module">
-        import * as SPLAT from 'https://cdn.jsdelivr.net/npm/gsplat@latest/dist/gsplat.module.js';
+        const statusText = document.getElementById("statusText");
+        const MAX_POINTS = 350000;
 
-        const canvas = document.createElement('canvas');
-        document.body.appendChild(canvas);
+        function setStatus(text) {
+            statusText.textContent = text;
+        }
 
-        const renderer = new SPLAT.WebGLRenderer(canvas);
-        const scene = new SPLAT.Scene();
-        const camera = new SPLAT.Camera();
-        const controls = new SPLAT.OrbitControls(camera, canvas);
+        function clamp01(v) {
+            return Math.min(1, Math.max(0, v));
+        }
+
+        const TYPE_SIZE = {
+            char: 1,
+            int8: 1,
+            uchar: 1,
+            uint8: 1,
+            short: 2,
+            int16: 2,
+            ushort: 2,
+            uint16: 2,
+            int: 4,
+            int32: 4,
+            uint: 4,
+            uint32: 4,
+            float: 4,
+            float32: 4,
+            double: 8,
+            float64: 8,
+        };
+
+        function readValue(view, offset, type) {
+            switch (type) {
+                case "char":
+                case "int8":
+                    return view.getInt8(offset);
+                case "uchar":
+                case "uint8":
+                    return view.getUint8(offset);
+                case "short":
+                case "int16":
+                    return view.getInt16(offset, true);
+                case "ushort":
+                case "uint16":
+                    return view.getUint16(offset, true);
+                case "int":
+                case "int32":
+                    return view.getInt32(offset, true);
+                case "uint":
+                case "uint32":
+                    return view.getUint32(offset, true);
+                case "float":
+                case "float32":
+                    return view.getFloat32(offset, true);
+                case "double":
+                case "float64":
+                    return view.getFloat64(offset, true);
+                default:
+                    throw new Error(`Unsupported PLY property type: ${type}`);
+            }
+        }
+
+        async function loadThree() {
+            const sources = [
+                {
+                    three: "https://esm.sh/three@0.164.1?bundle",
+                    controls: "https://esm.sh/three@0.164.1/examples/jsm/controls/OrbitControls.js?bundle",
+                },
+                {
+                    three: "https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js",
+                    controls: "https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/controls/OrbitControls.js?module",
+                },
+            ];
+
+            let lastError = null;
+            for (const src of sources) {
+                try {
+                    const [THREE, controlsMod] = await Promise.all([
+                        import(src.three),
+                        import(src.controls),
+                    ]);
+                    return { THREE, OrbitControls: controlsMod.OrbitControls };
+                } catch (err) {
+                    lastError = err;
+                }
+            }
+
+            throw lastError || new Error("Could not load Three.js modules.");
+        }
+
+        function parseHeader(buffer) {
+            const probeBytes = Math.min(buffer.byteLength, 1024 * 1024);
+            const probeText = new TextDecoder("ascii").decode(buffer.slice(0, probeBytes));
+            const match = probeText.match(/end_header\r?\n/);
+            if (!match) {
+                throw new Error("PLY header terminator not found.");
+            }
+
+            const headerEnd = match.index + match[0].length;
+            const headerText = probeText.slice(0, headerEnd);
+            const lines = headerText.split(/\r?\n/);
+
+            let format = "";
+            let vertexCount = 0;
+            let currentElement = "";
+            const vertexProps = [];
+
+            for (const raw of lines) {
+                const line = raw.trim();
+                if (!line || line.startsWith("comment")) {
+                    continue;
+                }
+                if (line.startsWith("format ")) {
+                    format = line.split(/\s+/)[1] || "";
+                    continue;
+                }
+                if (line.startsWith("element ")) {
+                    const parts = line.split(/\s+/);
+                    currentElement = parts[1] || "";
+                    if (currentElement === "vertex") {
+                        vertexCount = Number(parts[2] || 0);
+                    }
+                    continue;
+                }
+                if (currentElement === "vertex" && line.startsWith("property ")) {
+                    const parts = line.split(/\s+/);
+                    if (parts[1] === "list") {
+                        continue;
+                    }
+                    vertexProps.push({ type: parts[1], name: parts[2] });
+                }
+            }
+
+            if (format !== "binary_little_endian") {
+                throw new Error(`Unsupported PLY format: ${format}`);
+            }
+            if (!vertexCount || vertexProps.length === 0) {
+                throw new Error("PLY file does not contain vertex element data.");
+            }
+
+            let stride = 0;
+            for (const prop of vertexProps) {
+                const size = TYPE_SIZE[prop.type];
+                if (!size) {
+                    throw new Error(`Unsupported vertex property type: ${prop.type}`);
+                }
+                prop.offset = stride;
+                stride += size;
+            }
+
+            return { headerEnd, vertexCount, vertexProps, stride };
+        }
+
+        async function parseSharpPly(url) {
+            setStatus("Downloading scene.ply...");
+            const response = await fetch(url, { cache: "no-store" });
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status} while loading scene.ply`);
+            }
+            const buffer = await response.arrayBuffer();
+
+            const { headerEnd, vertexCount, vertexProps, stride } = parseHeader(buffer);
+
+            const findProp = (name) => vertexProps.find((p) => p.name === name);
+            const xProp = findProp("x");
+            const yProp = findProp("y");
+            const zProp = findProp("z");
+            if (!xProp || !yProp || !zProp) {
+                throw new Error("PLY is missing x/y/z vertex properties.");
+            }
+
+            const rProp = findProp("red");
+            const gProp = findProp("green");
+            const bProp = findProp("blue");
+            const dc0 = findProp("f_dc_0");
+            const dc1 = findProp("f_dc_1");
+            const dc2 = findProp("f_dc_2");
+
+            const step = Math.max(1, Math.ceil(vertexCount / MAX_POINTS));
+            const targetCount = Math.ceil(vertexCount / step);
+            const positions = new Float32Array(targetCount * 3);
+            const colors = new Float32Array(targetCount * 3);
+
+            const view = new DataView(buffer, headerEnd);
+            const c0 = 0.28209479177387814;
+            let writeIndex = 0;
+
+            setStatus(`Parsing ${vertexCount.toLocaleString()} points...`);
+            for (let i = 0; i < vertexCount; i += step) {
+                const base = i * stride;
+
+                const x = readValue(view, base + xProp.offset, xProp.type);
+                const y = readValue(view, base + yProp.offset, yProp.type);
+                const z = readValue(view, base + zProp.offset, zProp.type);
+
+                if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+                    continue;
+                }
+
+                const j = writeIndex * 3;
+                positions[j] = x;
+                positions[j + 1] = y;
+                positions[j + 2] = z;
+
+                if (rProp && gProp && bProp) {
+                    colors[j] = readValue(view, base + rProp.offset, rProp.type) / 255;
+                    colors[j + 1] = readValue(view, base + gProp.offset, gProp.type) / 255;
+                    colors[j + 2] = readValue(view, base + bProp.offset, bProp.type) / 255;
+                } else if (dc0 && dc1 && dc2) {
+                    colors[j] = clamp01(0.5 + c0 * readValue(view, base + dc0.offset, dc0.type));
+                    colors[j + 1] = clamp01(0.5 + c0 * readValue(view, base + dc1.offset, dc1.type));
+                    colors[j + 2] = clamp01(0.5 + c0 * readValue(view, base + dc2.offset, dc2.type));
+                } else {
+                    colors[j] = 0.75;
+                    colors[j + 1] = 0.82;
+                    colors[j + 2] = 1.0;
+                }
+
+                writeIndex++;
+                if (writeIndex % 50000 === 0) {
+                    setStatus(`Parsed ${writeIndex.toLocaleString()} / ${targetCount.toLocaleString()} points...`);
+                    await new Promise((resolve) => setTimeout(resolve, 0));
+                }
+            }
+
+            return {
+                positions: positions.subarray(0, writeIndex * 3),
+                colors: colors.subarray(0, writeIndex * 3),
+                pointCount: writeIndex,
+                totalCount: vertexCount,
+            };
+        }
+
+        window.addEventListener("error", (event) => {
+            setStatus(`Viewer error: ${event.message || "Unknown error"}`);
+        });
 
         async function main() {
-            // Load the .ply file
-            await SPLAT.Loader.LoadAsync('scene.ply', scene, (progress) => {
-                document.querySelector('#info p').textContent = `Loading: ${Math.round(progress * 100)}%`;
-            });
-            
-            document.querySelector('#info p').textContent = 'Scene Loaded';
+            try {
+                const { THREE, OrbitControls } = await loadThree();
 
-            // Handle resize
-            function onResize() {
+                const renderer = new THREE.WebGLRenderer({ antialias: true });
+                renderer.setPixelRatio(window.devicePixelRatio || 1);
                 renderer.setSize(window.innerWidth, window.innerHeight);
-                camera.aspect = window.innerWidth / window.innerHeight;
-                camera.updateProjectionMatrix();
-            }
-            window.addEventListener('resize', onResize);
-            onResize();
+                renderer.outputColorSpace = THREE.SRGBColorSpace;
+                document.body.appendChild(renderer.domElement);
 
-            // Animation loop
-            function frame() {
+                const scene = new THREE.Scene();
+                scene.background = new THREE.Color(0x0b0f14);
+
+                const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.01, 5000);
+                camera.position.set(0, 0, 2.5);
+
+                const controls = new OrbitControls(camera, renderer.domElement);
+                controls.enableDamping = true;
+                controls.dampingFactor = 0.06;
+
+                scene.add(new THREE.HemisphereLight(0xffffff, 0x1c2636, 1.0));
+                const dir = new THREE.DirectionalLight(0xffffff, 0.7);
+                dir.position.set(1, 2, 2);
+                scene.add(dir);
+
+                const parsed = await parseSharpPly("scene.ply");
+                if (parsed.pointCount === 0) {
+                    throw new Error("scene.ply parsed but no valid points were found.");
+                }
+
+                const geometry = new THREE.BufferGeometry();
+                geometry.setAttribute("position", new THREE.BufferAttribute(parsed.positions, 3));
+                geometry.setAttribute("color", new THREE.BufferAttribute(parsed.colors, 3));
+                geometry.computeBoundingSphere();
+
+                const radius = Math.max(geometry.boundingSphere?.radius || 1.0, 0.1);
+                const pointSizePx = Math.max(1.5, Math.min(4.0, 2200 / Math.sqrt(parsed.pointCount)));
+
+                const points = new THREE.Points(
+                    geometry,
+                    new THREE.PointsMaterial({
+                        size: pointSizePx,
+                        vertexColors: true,
+                        sizeAttenuation: false,
+                        depthWrite: false,
+                    })
+                );
+                points.frustumCulled = false;
+                scene.add(points);
+
+                controls.target.set(0, 0, 0);
+                camera.position.set(radius * 2.8, radius * 1.2, radius * 2.8);
+                camera.near = Math.max(radius / 2000, 0.001);
+                camera.far = radius * 5000;
+                camera.updateProjectionMatrix();
                 controls.update();
-                renderer.render(scene, camera);
-                requestAnimationFrame(frame);
+
+                setStatus(
+                    `Scene loaded: ${parsed.pointCount.toLocaleString()} / ${parsed.totalCount.toLocaleString()} points`
+                );
+
+                function animate() {
+                    requestAnimationFrame(animate);
+                    controls.update();
+                    renderer.render(scene, camera);
+                }
+                animate();
+
+                window.addEventListener("resize", () => {
+                    camera.aspect = window.innerWidth / window.innerHeight;
+                    camera.updateProjectionMatrix();
+                    renderer.setSize(window.innerWidth, window.innerHeight);
+                });
+            } catch (error) {
+                console.error(error);
+                setStatus(`Failed to load viewer: ${error?.message || error}`);
             }
-            requestAnimationFrame(frame);
         }
 
         main();

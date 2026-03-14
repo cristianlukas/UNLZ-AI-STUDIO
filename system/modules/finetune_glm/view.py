@@ -158,7 +158,7 @@ class FinetuneGLMView(ctk.CTkFrame):
             "transformers==5.0.0rc3",
             "datasets",
             "trl",
-            "peft",
+            "peft>=0.17.0",
             "accelerate",
         ]
         self._run_process(

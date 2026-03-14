@@ -20,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
 import psutil
+from modules.neutts.neutts_espeak import detect_espeak_status
 
 from runtime_profiles import detect_system_info, ProfileManager
 from process_manager import GpuProcessManager
@@ -39,6 +40,7 @@ LOG_DIR = BASE_DIR / "logs"
 DEFAULT_SETTINGS = {
     "language": "es",
     "model_dir": r"C:\models",
+    "vlm_model_dir": r"C:\models\qwen2.5-vl-gguf",
     "show_logs": True,
     "theme": "Light",
     "rag_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
@@ -47,6 +49,7 @@ DEFAULT_SETTINGS = {
 AVAILABLE_MODULES = [
     {"key": "monitor", "title_key": "mod_monitor_title", "desc_key": "mod_monitor_desc", "category": "core"},
     {"key": "llm_frontend", "title_key": "mod_llm_title", "desc_key": "mod_llm_desc", "category": "core"},
+    {"key": "vlm_frontend", "title_key": "mod_vlm_title", "desc_key": "mod_vlm_desc", "category": "core"},
     {"key": "inclu_ia", "title_key": "mod_incluia_title", "desc_key": "mod_incluia_desc", "category": "core"},
     {"key": "ml_sharp", "title_key": "mod_mlsharp_title", "desc_key": "mod_mlsharp_desc", "category": "vision"},
     {"key": "model_3d", "title_key": "mod_model3d_title", "desc_key": "mod_model3d_desc", "category": "vision"},
@@ -175,6 +178,42 @@ def _run_cmd(key: str, cmd: List[str], cwd: Optional[Path] = None, env: Optional
     threading.Thread(target=worker, daemon=True).start()
 
 
+def _run_cmd_chain(key: str, commands: List[List[str]], cwd: Optional[Path] = None, env: Optional[Dict] = None) -> None:
+    def worker():
+        rc = 0
+        try:
+            with MODULE_PROC_LOCK:
+                MODULE_PROCS.pop(key, None)
+            for cmd in commands:
+                _append_log(key, f"$ {' '.join(cmd)}")
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=str(cwd) if cwd else None,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+                    env=env,
+                )
+                with MODULE_PROC_LOCK:
+                    MODULE_PROCS[key] = proc
+                if proc.stdout:
+                    for line in proc.stdout:
+                        _append_log(key, line.rstrip())
+                proc.wait()
+                rc = proc.returncode
+                _append_log(key, f"[done] exit={rc}")
+                if rc != 0:
+                    break
+        except Exception as exc:
+            _append_log(key, f"[error] {exc}")
+        finally:
+            with MODULE_PROC_LOCK:
+                MODULE_PROCS.pop(key, None)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
 def _run_cmd_with_marker(
     key: str,
     cmd: List[str],
@@ -238,6 +277,69 @@ def _stop_proc(key: str) -> None:
         MODULE_PROCS.pop(key, None)
 
 
+def _find_listening_process_on_port(port: int) -> Optional[psutil.Process]:
+    """Return the process listening on a local TCP port, if any."""
+    try:
+        for conn in psutil.net_connections(kind="tcp"):
+            if not conn.laddr or conn.laddr.port != port:
+                continue
+            if conn.status != psutil.CONN_LISTEN:
+                continue
+            if not conn.pid:
+                continue
+            try:
+                return psutil.Process(conn.pid)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+    except Exception:
+        return None
+    return None
+
+
+def _is_cyberscraper_streamlit_process(proc: psutil.Process) -> bool:
+    """Check whether a process appears to be CyberScraper's Streamlit server."""
+    try:
+        cmdline = " ".join(proc.cmdline()).lower()
+        proc_cwd = (proc.cwd() or "").lower()
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
+    return (
+        "streamlit" in cmdline
+        and "main.py" in cmdline
+        and (
+            "cyberscraper-2077" in cmdline
+            or "cyberscraper-2077" in proc_cwd
+        )
+    )
+
+
+def _terminate_process_tree(proc: psutil.Process, timeout: float = 5.0) -> None:
+    """Terminate a process and its children best-effort."""
+    try:
+        children = proc.children(recursive=True)
+    except Exception:
+        children = []
+
+    for child in children:
+        try:
+            child.terminate()
+        except Exception:
+            pass
+
+    try:
+        proc.terminate()
+    except Exception:
+        return
+
+    try:
+        proc.wait(timeout=timeout)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
 def _resolve_hymotion_backend_dir() -> Path:
     primary = HYMOTION_BACKEND_DIR
     legacy = BASE_DIR.parent / "system" / "ai-backends" / "HY-Motion-1.0"
@@ -246,6 +348,23 @@ def _resolve_hymotion_backend_dir() -> Path:
     if legacy.exists():
         return legacy
     return primary
+
+
+def _prepare_hymotion_requirements(req_path: Path) -> Path:
+    if sys.version_info < (3, 12):
+        return req_path
+    try:
+        content = req_path.read_text(encoding="utf-8")
+        updated = content.replace("PyYAML==6.0", "PyYAML==6.0.2")
+        if updated == content:
+            return req_path
+        temp_dir = BASE_DIR / "data" / "hymotion"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_req_path = temp_dir / "requirements_py312.txt"
+        temp_req_path.write_text(updated, encoding="utf-8")
+        return temp_req_path
+    except Exception:
+        return req_path
 
 
 def _get_local_ip() -> str:
@@ -259,6 +378,47 @@ def _get_local_ip() -> str:
         return "127.0.0.1"
 
 
+def _version_at_least(version: str, minimum: str) -> bool:
+    version_parts = [int(part) for part in re.findall(r"\d+", version or "")]
+    minimum_parts = [int(part) for part in re.findall(r"\d+", minimum or "")]
+    if not version_parts or not minimum_parts:
+        return False
+    max_len = max(len(version_parts), len(minimum_parts))
+    version_parts.extend([0] * (max_len - len(version_parts)))
+    minimum_parts.extend([0] * (max_len - len(minimum_parts)))
+    return tuple(version_parts) >= tuple(minimum_parts)
+
+
+def _error_chain_text(exc: Exception) -> str:
+    parts = []
+    seen = set()
+    stack = [exc]
+    while stack:
+        current = stack.pop(0)
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        text = str(current)
+        if text:
+            parts.append(text)
+        cause = getattr(current, "__cause__", None)
+        context = getattr(current, "__context__", None)
+        if cause is not None:
+            stack.append(cause)
+        if context is not None:
+            stack.append(context)
+    return "\n".join(parts).lower()
+
+
+def _is_torchvision_mismatch(exc: Exception) -> bool:
+    text = _error_chain_text(exc)
+    return (
+        "torchvision::nms" in text
+        or "could not import module 'hubertmodel'" in text
+        or "from torchvision.transforms import interpolationmode" in text
+    )
+
+
 def _klein_deps_ok() -> bool:
     required = ["diffusers", "transformers", "accelerate", "safetensors", "huggingface_hub", "torch", "PIL"]
     for pkg in required:
@@ -269,6 +429,15 @@ def _klein_deps_ok() -> bool:
                 importlib.metadata.version(pkg)
         except Exception:
             return False
+    try:
+        torch_version = importlib.metadata.version("torch")
+        torchao_version = importlib.metadata.version("torchao")
+        torch_norm = ".".join(re.split(r"[+.-]", torch_version)[0:3])
+        torchao_norm = ".".join(re.split(r"[+.-]", torchao_version)[0:2])
+        if torch_norm.startswith("2.5.0") and torchao_norm.startswith("0.16"):
+            return False
+    except Exception:
+        pass
     return True
 
 
@@ -282,30 +451,39 @@ def _mlsharp_find_sharp() -> Optional[str]:
 
 
 def _neutts_deps_ok(repo_id: str) -> bool:
+    backend_added = False
+    backend_path = str(NEUTTS_BACKEND_DIR)
+    if NEUTTS_BACKEND_DIR.exists() and backend_path not in sys.path:
+        sys.path.insert(0, backend_path)
+        backend_added = True
     try:
         import neutts  # noqa: F401
+    except Exception as exc:
+        if not _is_torchvision_mismatch(exc):
+            if backend_added and sys.path and sys.path[0] == backend_path:
+                sys.path.pop(0)
+            return False
+    try:
         import soundfile  # noqa: F401
     except Exception:
+        if backend_added and sys.path and sys.path[0] == backend_path:
+            sys.path.pop(0)
         return False
     if repo_id.endswith("gguf"):
         try:
             import llama_cpp  # noqa: F401
         except Exception:
+            if backend_added and sys.path and sys.path[0] == backend_path:
+                sys.path.pop(0)
             return False
+    if backend_added and sys.path and sys.path[0] == backend_path:
+        sys.path.pop(0)
     return True
 
 
 def _neutts_espeak_status() -> Dict:
-    exe = which("espeak-ng") or which("espeak")
-    if exe:
-        return {"ok": True, "detail": exe}
-    lib_path = os.environ.get("PHONEMIZER_ESPEAK_LIBRARY", "")
-    if lib_path and Path(lib_path).exists():
-        return {"ok": True, "detail": lib_path}
-    bin_path = os.environ.get("PHONEMIZER_ESPEAK_PATH", "")
-    if bin_path and Path(bin_path).exists():
-        return {"ok": True, "detail": bin_path}
-    return {"ok": False, "detail": ""}
+    status = detect_espeak_status(update_env=True)
+    return {"ok": status["ok"], "detail": status["detail"]}
 
 
 def _query_nvidia_smi() -> Optional[Dict[str, List]]:
@@ -636,38 +814,116 @@ def _model3d_write_stepx1_script(input_path: str, output_dir: str, repo_path: Pa
     return script_path
 
 
-def _model3d_write_hunyuan_script(input_path: str, output_dir: str, repo_path: Path) -> Path:
+def _model3d_write_hunyuan_script(
+    input_path: str,
+    output_dir: str,
+    repo_path: Path,
+    enable_texture: bool = False,
+) -> Path:
     script_path = MODEL3D_DATA_DIR / "hunyuan_run.py"
     weights_dir = MODEL3D_WEIGHTS_DIR / "Hunyuan3D-2"
+    texture_mode_line = (
+        "os.environ[\"HUNYUAN_FORCE_TEXTURE\"] = \"1\"\n"
+        if enable_texture
+        else "os.environ[\"HUNYUAN_NO_TEXTURE\"] = \"1\"\n"
+    )
+    texture_mode_log = (
+        "print(\"[Hunyuan] Mode: geometry + texture\", flush=True)\n"
+        if enable_texture
+        else "print(\"[Hunyuan] Mode: geometry only\", flush=True)\n"
+    )
     script = (
         "import os\n"
         "import sys\n"
+        "import time\n"
         f"sys.path.insert(0, r\"{repo_path}\")\n"
         "os.environ[\"HF_HUB_DISABLE_PROGRESS_BARS\"] = \"1\"\n"
+        f"{texture_mode_line}"
+        "print(\"[Hunyuan] Starting pipeline\", flush=True)\n"
+        f"{texture_mode_log}"
+        "import torch\n"
+        "from PIL import Image\n"
         "from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline\n"
         "from hy3dgen.texgen import Hunyuan3DPaintPipeline\n"
-        f"input_image = r\"{input_path}\"\n"
+        f"input_image_path = r\"{input_path}\"\n"
         f"out_dir = r\"{output_dir}\"\n"
         "os.makedirs(out_dir, exist_ok=True)\n"
         "mesh_path = os.path.join(out_dir, \"mesh.glb\")\n"
+        "with Image.open(input_image_path) as img:\n"
+        "    input_image = img.convert(\"RGBA\")\n"
         f"weights_dir = r\"{weights_dir}\"\n"
         "base = \"tencent/Hunyuan3D-2\"\n"
-        "local_ok = False\n"
+        "base_is_local = False\n"
         "if weights_dir and os.path.exists(weights_dir):\n"
         "    os.environ[\"HY3DGEN_MODELS\"] = weights_dir\n"
-        "    for name in (\"hunyuan3d-dit-v2-0\", \"hunyuan3d-dit-v2-0-fast\", \"hunyuan3d-dit-v2-0-turbo\"):\n"
-        "        path = os.path.join(weights_dir, \"tencent\", \"Hunyuan3D-2\", name)\n"
-        "        if os.path.exists(path):\n"
-        "            local_ok = True\n"
+        "    local_candidates = [\n"
+        "        os.path.join(weights_dir, \"hunyuan3d-dit-v2-0\"),\n"
+        "        os.path.join(weights_dir, \"hunyuan3d-dit-v2-0-fast\"),\n"
+        "        os.path.join(weights_dir, \"hunyuan3d-dit-v2-0-turbo\"),\n"
+        "        os.path.join(weights_dir, \"tencent\", \"Hunyuan3D-2\", \"hunyuan3d-dit-v2-0\"),\n"
+        "        os.path.join(weights_dir, \"tencent\", \"Hunyuan3D-2\", \"hunyuan3d-dit-v2-0-fast\"),\n"
+        "        os.path.join(weights_dir, \"tencent\", \"Hunyuan3D-2\", \"hunyuan3d-dit-v2-0-turbo\"),\n"
+        "    ]\n"
+        "    if any(os.path.exists(path) for path in local_candidates):\n"
+        "        base = weights_dir\n"
+        "        base_is_local = True\n"
+        "        os.environ[\"HF_HUB_OFFLINE\"] = \"1\"\n"
+        "shape_subfolder = os.environ.get(\"HUNYUAN_SHAPE_SUBFOLDER\", \"\").strip()\n"
+        "if not shape_subfolder:\n"
+        "    for candidate in (\"hunyuan3d-dit-v2-0-turbo\", \"hunyuan3d-dit-v2-0-fast\", \"hunyuan3d-dit-v2-0\"):\n"
+        "        if not base_is_local or os.path.exists(os.path.join(base, candidate)):\n"
+        "            shape_subfolder = candidate\n"
         "            break\n"
-        "if local_ok:\n"
-        "    os.environ[\"HF_HUB_OFFLINE\"] = \"1\"\n"
-        "pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(base)\n"
-        "mesh = pipeline(image=input_image)[0]\n"
+        "if not shape_subfolder:\n"
+        "    shape_subfolder = \"hunyuan3d-dit-v2-0\"\n"
+        "default_steps = 30\n"
+        "if \"turbo\" in shape_subfolder:\n"
+        "    default_steps = 5\n"
+        "elif \"fast\" in shape_subfolder:\n"
+        "    default_steps = 20\n"
+        "num_steps = int(os.environ.get(\"HUNYUAN_STEPS\", str(default_steps)))\n"
+        "print(f\"[Hunyuan] Loading shape model: base={base} subfolder={shape_subfolder} steps={num_steps}\", flush=True)\n"
+        "pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(base, subfolder=shape_subfolder)\n"
+        "if hasattr(pipeline, \"enable_flashvdm\") and \"turbo\" in shape_subfolder:\n"
+        "    try:\n"
+        "        pipeline.enable_flashvdm(mc_algo=\"mc\")\n"
+        "        print(\"[Hunyuan] FlashVDM enabled\", flush=True)\n"
+        "    except Exception as exc:\n"
+        "        print(f\"[Hunyuan] FlashVDM unavailable: {exc}\", flush=True)\n"
+        "print(\"[Hunyuan] Generating geometry...\", flush=True)\n"
+        "t0 = time.time()\n"
+        "mesh = pipeline(image=input_image, num_inference_steps=num_steps, guidance_scale=5.0)[0]\n"
+        "print(f\"[Hunyuan] Geometry done in {time.time() - t0:.1f}s\", flush=True)\n"
         "mesh.export(mesh_path)\n"
-        "paint = Hunyuan3DPaintPipeline.from_pretrained(base)\n"
-        "mesh = paint(mesh, image=input_image)\n"
-        "mesh.export(os.path.join(out_dir, \"mesh_textured.glb\"))\n"
+        "print(f\"[Hunyuan] Saved geometry: {mesh_path}\", flush=True)\n"
+        "vram_gb = None\n"
+        "if torch.cuda.is_available():\n"
+        "    try:\n"
+        "        vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)\n"
+        "    except Exception:\n"
+        "        vram_gb = None\n"
+        "force_texture = os.environ.get(\"HUNYUAN_FORCE_TEXTURE\", \"0\") == \"1\"\n"
+        "disable_texture = os.environ.get(\"HUNYUAN_NO_TEXTURE\", \"0\") == \"1\"\n"
+        "enable_texture = force_texture or (not disable_texture and (vram_gb is None or vram_gb >= 12.0))\n"
+        "if not enable_texture:\n"
+        "    print(f\"[Hunyuan] Skipping texture stage (VRAM={vram_gb} GB). Set HUNYUAN_FORCE_TEXTURE=1 to force.\", flush=True)\n"
+        "else:\n"
+        "    print(\"[Hunyuan] Loading texture model...\", flush=True)\n"
+        "    if torch.cuda.is_available():\n"
+        "        torch.cuda.empty_cache()\n"
+        "    paint = Hunyuan3DPaintPipeline.from_pretrained(base, subfolder=\"hunyuan3d-paint-v2-0-turbo\")\n"
+        "    if hasattr(paint, \"enable_model_cpu_offload\"):\n"
+        "        try:\n"
+        "            paint.enable_model_cpu_offload()\n"
+        "        except Exception:\n"
+        "            pass\n"
+        "    print(\"[Hunyuan] Generating texture...\", flush=True)\n"
+        "    t1 = time.time()\n"
+        "    mesh = paint(mesh, image=input_image)\n"
+        "    tex_path = os.path.join(out_dir, \"mesh_textured.glb\")\n"
+        "    mesh.export(tex_path)\n"
+        "    print(f\"[Hunyuan] Texture done in {time.time() - t1:.1f}s\", flush=True)\n"
+        "    print(f\"[Hunyuan] Saved textured mesh: {tex_path}\", flush=True)\n"
     )
     script_path.write_text(script, encoding="utf-8")
     return script_path
@@ -708,6 +964,19 @@ def _start_http_server(directory: Path, module_key: str, viewer_path: str) -> st
     cmd = [python_exe, "-m", "http.server", str(port), "--directory", str(directory)]
     _run_cmd(f"{module_key}_server_{port}", cmd, cwd=directory)
     return f"http://localhost:{port}/{viewer_path}"
+
+
+def _find_available_port(preferred: List[int], host: str = "127.0.0.1") -> int:
+    for port in preferred:
+        try:
+            with socket.create_connection((host, int(port)), timeout=0.2):
+                continue
+        except Exception:
+            return int(port)
+    # Fallback to an ephemeral port chosen by the OS.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind((host, 0))
+        return int(s.getsockname()[1])
 
 
 def _mlsharp_list_scenes() -> List[Dict]:
@@ -1064,6 +1333,37 @@ def _scan_models(model_dir: str, lang: str) -> List[Dict]:
     return models
 
 
+def _scan_vlm_models(model_dir: str, lang: str) -> List[Dict]:
+    bundle = _get_language_bundle(lang)
+    recommended_suffix = bundle.get("suffix_recommended", " (recommended)")
+    search_dir = Path(model_dir)
+    models = []
+    if not search_dir.exists():
+        return models
+    for path in search_dir.rglob("*.gguf"):
+        lowered = path.name.lower()
+        if "mmproj" in lowered:
+            continue
+        recommended = "qwen2.5-vl-7b-instruct" in lowered
+        label = f"{path.name}{recommended_suffix}" if recommended else path.name
+        models.append({"label": label, "path": str(path), "recommended": recommended})
+    return models
+
+
+def _find_vlm_mmproj(model_path: Path) -> Optional[Path]:
+    model_dir = model_path.parent
+    for name in [
+        "mmproj-F16.gguf",
+        "mmproj-BF16.gguf",
+        "mmproj-model-f16.gguf",
+        "Qwen_Qwen2.5-VL-7B-Instruct-mmproj-f16.gguf",
+    ]:
+        candidate = model_dir / name
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def _service_status(lang: str) -> List[Dict]:
     bundle = _get_language_bundle(lang)
     services = []
@@ -1099,6 +1399,7 @@ class ModuleAction(BaseModel):
 class SettingsUpdate(BaseModel):
     language: str | None = None
     model_dir: str | None = None
+    vlm_model_dir: str | None = None
     show_logs: bool | None = None
     theme: str | None = None
 
@@ -1186,6 +1487,20 @@ class LLMDelete(BaseModel):
     path: str
 
 
+class VLMChatStart(BaseModel):
+    model_path: str
+
+
+class VLMAnalyze(BaseModel):
+    prompt: str
+    image_data_url: str | None = None
+    image_base64: str | None = None
+    media_type: str = "image/jpeg"
+    temperature: float | None = None
+    top_p: float | None = None
+    max_new_tokens: int | None = None
+
+
 class MLSharpRun(BaseModel):
     input_path: str
     output_dir: str | None = None
@@ -1206,6 +1521,7 @@ class Model3DRun(BaseModel):
     input_paths: List[str]
     input_mode: str
     output_dir: str | None = None
+    enable_texture: bool | None = None
 
 
 class Model3DWeights(BaseModel):
@@ -1464,6 +1780,8 @@ def start_service(action: ServiceAction):
     config = {"port": ports[action.key]}
     if action.key in ("llm_service", "clm_service"):
         config["model_path"] = action.model_path
+    if action.key == "vlm_service" and SYSTEM_INFO.vram_gb_per_gpu:
+        config["n_gpu_layers"] = PROFILE_MANAGER._suggested_gpu_layers(SYSTEM_INFO.vram_gb_per_gpu[0])
     PROCESS_MANAGER.start_process(action.key, config)
     return {"ok": True}
 
@@ -1530,8 +1848,17 @@ def cyberscraper_deps():
 
 @app.post("/modules/cyberscraper/playwright")
 def cyberscraper_playwright():
+    if not CYBER_BACKEND_DIR.exists():
+        raise HTTPException(status_code=404, detail="Backend not installed")
     python_path = sys.executable.replace("pythonw.exe", "python.exe")
-    _run_cmd("cyberscraper", [python_path, "-m", "playwright", "install"], cwd=CYBER_BACKEND_DIR)
+    _run_cmd_chain(
+        "cyberscraper",
+        [
+            [python_path, "-m", "pip", "install", "playwright"],
+            [python_path, "-m", "playwright", "install"],
+        ],
+        cwd=CYBER_BACKEND_DIR,
+    )
     return {"ok": True}
 
 
@@ -1541,6 +1868,27 @@ def cyberscraper_start(payload: CyberServerStart):
         return {"ok": True}
     if not CYBER_BACKEND_DIR.exists():
         raise HTTPException(status_code=404, detail="Backend not installed")
+
+    owner_proc = _find_listening_process_on_port(payload.port)
+    if owner_proc is not None:
+        if _is_cyberscraper_streamlit_process(owner_proc):
+            _append_log(
+                "cyberscraper",
+                f"[info] Stopping stale CyberScraper process PID={owner_proc.pid} on port {payload.port}",
+            )
+            _terminate_process_tree(owner_proc)
+        else:
+            try:
+                owner_name = owner_proc.name()
+                owner_pid = owner_proc.pid
+            except Exception:
+                owner_name = "unknown"
+                owner_pid = "unknown"
+            raise HTTPException(
+                status_code=409,
+                detail=f"Port {payload.port} is already in use by {owner_name} (PID {owner_pid}).",
+            )
+
     python_path = sys.executable.replace("pythonw.exe", "python.exe")
     cmd = [
         python_path,
@@ -1550,6 +1898,10 @@ def cyberscraper_start(payload: CyberServerStart):
         "main.py",
         "--server.port",
         str(payload.port),
+        "--server.headless",
+        "true",
+        "--browser.gatherUsageStats",
+        "false",
     ]
     env = os.environ.copy()
     if payload.openai_key:
@@ -1616,17 +1968,20 @@ def hymotion_uninstall():
 
 @app.post("/modules/hy_motion/deps")
 def hymotion_deps():
+    if _is_running("hy_motion"):
+        raise HTTPException(status_code=409, detail="HY-Motion is already running")
     backend_dir = _resolve_hymotion_backend_dir()
     req_path = backend_dir / "requirements.txt"
     if not req_path.exists():
         raise HTTPException(status_code=404, detail="requirements.txt not found")
     python_path = sys.executable.replace("pythonw.exe", "python.exe")
+    install_req_path = _prepare_hymotion_requirements(req_path)
 
     def worker():
         _run_cmd("hy_motion", [python_path, "-m", "pip", "install", "--only-binary=:all:", "PyYAML==6.0.2"], cwd=backend_dir.parent)
         while _is_running("hy_motion"):
             time.sleep(0.5)
-        _run_cmd("hy_motion", [python_path, "-m", "pip", "install", "-r", str(req_path)], cwd=backend_dir)
+        _run_cmd("hy_motion", [python_path, "-m", "pip", "install", "-r", str(install_req_path)], cwd=backend_dir)
         while _is_running("hy_motion"):
             time.sleep(0.5)
         try:
@@ -1640,6 +1995,8 @@ def hymotion_deps():
 
 @app.post("/modules/hy_motion/download_weights")
 def hymotion_download(payload: HYMotionDownload):
+    if _is_running("hy_motion"):
+        raise HTTPException(status_code=409, detail="HY-Motion is already running")
     backend_dir = _resolve_hymotion_backend_dir()
     script_path = BASE_DIR / "data" / "hymotion" / "hymotion_download.py"
     python_path = sys.executable.replace("pythonw.exe", "python.exe")
@@ -1658,6 +2015,8 @@ def hymotion_download(payload: HYMotionDownload):
 
 @app.post("/modules/hy_motion/run")
 def hymotion_run(payload: HYMotionRun):
+    if _is_running("hy_motion"):
+        raise HTTPException(status_code=409, detail="HY-Motion is already running")
     backend_dir = _resolve_hymotion_backend_dir()
     model_path = backend_dir / "ckpts" / "tencent" / payload.model_key
     if not model_path.exists():
@@ -1671,19 +2030,30 @@ def hymotion_run(payload: HYMotionRun):
     prompt_path = temp_dir / f"prompt_{int(time.time() * 1000)}.txt"
     prompt_path.write_text(payload.prompt, encoding="utf-8")
     python_path = sys.executable.replace("pythonw.exe", "python.exe")
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            _append_log("hy_motion", "HY-Motion is running on CPU because torch.cuda.is_available() is False. Generation can take a very long time.")
+    except Exception:
+        pass
     cmd = [
         python_path,
+        "-u",
         str(backend_dir / "local_infer.py"),
         "--model_path",
         str(model_path),
         "--input_text_dir",
-        str(prompt_path.parent),
+        str(prompt_path),
         "--output_dir",
         str(output_dir),
         "--disable_duration_est",
         "--disable_rewrite",
     ]
-    _run_cmd("hy_motion", cmd, cwd=backend_dir)
+    run_env = os.environ.copy()
+    run_env["USE_HF_MODELS"] = "1"
+    run_env["PYTHONUNBUFFERED"] = "1"
+    _run_cmd("hy_motion", cmd, cwd=backend_dir, env=run_env)
     return {"ok": True}
 
 
@@ -1736,7 +2106,28 @@ def hyworld_deps(payload: HYWorldDeps):
     if not req_path.exists():
         raise HTTPException(status_code=404, detail=f"{req_name} not found")
     python_path = sys.executable.replace("pythonw.exe", "python.exe")
-    _run_cmd("hyworld", [python_path, "-m", "pip", "install", "-r", str(req_path)], cwd=HYWORLD_BACKEND_DIR)
+    install_script = (
+        "import importlib.util\n"
+        "import subprocess\n"
+        "import sys\n"
+        f"req_path = {str(req_path)!r}\n"
+        "print(f'[hyworld] installing dependencies from {req_path}', flush=True)\n"
+        "rc = subprocess.call([sys.executable, '-m', 'pip', 'install', '-r', req_path])\n"
+        "if rc != 0:\n"
+        "    raise SystemExit(rc)\n"
+        "if importlib.util.find_spec('gsplat') is None:\n"
+        "    print('[hyworld] gsplat missing, trying official wheel index', flush=True)\n"
+        "    rc = subprocess.call([\n"
+        "        sys.executable, '-m', 'pip', 'install', 'gsplat',\n"
+        "        '--index-url', 'https://docs.gsplat.studio/whl/pt24cu124'\n"
+        "    ])\n"
+        "    if rc != 0:\n"
+        "        print('[hyworld] fallback: installing gsplat from default index', flush=True)\n"
+        "        rc = subprocess.call([sys.executable, '-m', 'pip', 'install', 'gsplat'])\n"
+        "    raise SystemExit(rc)\n"
+        "print('[hyworld] gsplat already available', flush=True)\n"
+    )
+    _run_cmd("hyworld", [python_path, "-c", install_script], cwd=HYWORLD_BACKEND_DIR)
     return {"ok": True}
 
 
@@ -1768,7 +2159,11 @@ def hyworld_run(payload: HYWorldRun):
         app_path = HYWORLD_BACKEND_DIR / "app.py"
         if not app_path.exists():
             raise HTTPException(status_code=404, detail="app.py not found")
-        _run_cmd("hyworld", [python_path, str(app_path)], cwd=HYWORLD_BACKEND_DIR)
+        run_env = os.environ.copy()
+        gradio_port = _find_available_port([7860, 7861, 7862, 7863, 8082, 8090, 18080])
+        run_env["GRADIO_SERVER_PORT"] = str(gradio_port)
+        _append_log("hyworld", f"[hyworld] GRADIO_SERVER_PORT={gradio_port}")
+        _run_cmd("hyworld", [python_path, str(app_path)], cwd=HYWORLD_BACKEND_DIR, env=run_env)
         return {"ok": True}
     input_path = payload.input_path or ""
     if not input_path:
@@ -1848,7 +2243,12 @@ def klein_state():
 def klein_deps():
     python_path = sys.executable.replace("pythonw.exe", "python.exe")
     packages = ["diffusers", "transformers", "accelerate", "safetensors", "huggingface_hub", "pillow"]
-    _run_cmd("klein", [python_path, "-m", "pip", "install", *packages], cwd=KLEIN_DATA_DIR)
+    uninstall_then_install = (
+        "import subprocess, sys; "
+        "subprocess.call([sys.executable, '-m', 'pip', 'uninstall', '-y', 'torchao']); "
+        f"raise SystemExit(subprocess.call([sys.executable, '-m', 'pip', 'install', {', '.join(repr(p) for p in packages)}]))"
+    )
+    _run_cmd("klein", [python_path, "-c", uninstall_then_install], cwd=KLEIN_DATA_DIR)
     return {"ok": True}
 
 
@@ -1998,6 +2398,170 @@ def llm_frontend_logs(lines: int = 200):
     return {"lines": _tail_log("llm_frontend", lines)}
 
 
+@app.get("/modules/vlm_frontend/state")
+def vlm_frontend_state():
+    settings = _get_settings()
+    model_dir = settings.get("vlm_model_dir", DEFAULT_SETTINGS["vlm_model_dir"])
+    models = _scan_vlm_models(model_dir, settings.get("language", "es"))
+    return {
+        "running": PROCESS_MANAGER.is_running("vlm_service"),
+        "model_dir": model_dir,
+        "models": models,
+    }
+
+
+@app.post("/modules/vlm_frontend/start")
+def vlm_frontend_start(payload: VLMChatStart):
+    if PROCESS_MANAGER.is_running("vlm_service"):
+        return {"ok": True}
+
+    model_path = Path(payload.model_path)
+    if not model_path.exists():
+        raise HTTPException(status_code=404, detail="Model file not found")
+
+    mmproj_path = _find_vlm_mmproj(model_path)
+    if not mmproj_path:
+        raise HTTPException(status_code=400, detail="mmproj file not found in model directory")
+
+    profile = PROFILE_MANAGER.active_profile
+    if profile.user_configurable:
+        launch = PROFILE_MANAGER.get_custom_settings()
+        n_gpu_layers = int(launch.get("n_gpu_layers", 2))
+        ctx_size = int(launch.get("ctx_size", 8192))
+        threads = int(launch.get("threads", 4))
+        batch_size = int(launch.get("batch_size", 8))
+    else:
+        n_gpu_layers = int(getattr(profile, "n_gpu_layers", 2))
+        ctx_size = max(4096, int(getattr(profile, "ctx_size", 4096)))
+        threads = int(getattr(profile, "threads", 4))
+        batch_size = int(getattr(profile, "batch_size", 8))
+
+    if SYSTEM_INFO.vram_gb_per_gpu:
+        n_gpu_layers = max(n_gpu_layers, PROFILE_MANAGER._suggested_gpu_layers(SYSTEM_INFO.vram_gb_per_gpu[0]))
+
+    config = {
+        "model_path": str(model_path),
+        "mmproj_path": str(mmproj_path),
+        "port": 9090,
+        "host": "127.0.0.1",
+        "n_gpu_layers": max(0, n_gpu_layers),
+        "ctx_size": max(2048, ctx_size),
+        "threads": max(1, threads),
+        "batch_size": max(1, batch_size),
+        "n_predict": 4096,
+    }
+    _set_settings({"vlm_model_dir": str(model_path.parent)})
+    PROCESS_MANAGER.start_process("vlm_service", config)
+    return {"ok": True}
+
+
+@app.post("/modules/vlm_frontend/stop")
+def vlm_frontend_stop():
+    PROCESS_MANAGER.stop("vlm_service")
+    return {"ok": True}
+
+
+@app.post("/modules/vlm_frontend/analyze")
+def vlm_frontend_analyze(payload: VLMAnalyze):
+    if not PROCESS_MANAGER.is_running("vlm_service"):
+        raise HTTPException(status_code=400, detail="VLM server not running")
+
+    prompt = (payload.prompt or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Prompt required")
+
+    image_data_url = (payload.image_data_url or "").strip()
+    if not image_data_url and payload.image_base64:
+        image_data_url = f"data:{payload.media_type};base64,{payload.image_base64.strip()}"
+    if not image_data_url:
+        raise HTTPException(status_code=400, detail="Image data required")
+
+    endpoint_settings = PROFILE_MANAGER.get_endpoint_settings("vlm")
+    max_new_tokens = int(payload.max_new_tokens or endpoint_settings.get("max_new_tokens", 512))
+    max_new_tokens = max(256, min(max_new_tokens, 4096))
+    temperature = float(payload.temperature if payload.temperature is not None else endpoint_settings.get("temperature", 0.2))
+    top_p = float(payload.top_p if payload.top_p is not None else endpoint_settings.get("top_p", 0.9))
+    timeout = max(120.0, 5.0 + (max_new_tokens * 0.2))
+
+    body = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": image_data_url}},
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ],
+        "temperature": temperature,
+        "top_p": top_p,
+        "max_tokens": max_new_tokens,
+        "n_predict": max_new_tokens,
+        "stream": False,
+    }
+
+    try:
+        _append_log("vlm_frontend", f"[user] {prompt}")
+        response = httpx.post("http://127.0.0.1:9090/v1/chat/completions", json=body, timeout=timeout)
+        if response.status_code >= 500:
+            # Retry once with fewer tokens for transient decoder/memory pressure.
+            fallback_tokens = max(256, max_new_tokens // 2)
+            fallback_body = dict(body)
+            fallback_body["max_tokens"] = fallback_tokens
+            fallback_body["n_predict"] = fallback_tokens
+            _append_log("vlm_frontend", f"[retry] downstream_500 max_tokens={fallback_tokens}")
+            response = httpx.post("http://127.0.0.1:9090/v1/chat/completions", json=fallback_body, timeout=timeout)
+        response.raise_for_status()
+        data = response.json()
+        answer = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        if not answer:
+            answer = data.get("choices", [{}])[0].get("text", "")
+        _append_log("vlm_frontend", f"[assistant] {answer}")
+        return {"answer": answer}
+    except httpx.HTTPStatusError as exc:
+        detail = f"VLM request failed with status {exc.response.status_code}."
+        if exc.response.status_code >= 500:
+            detail = (
+                "VLM server failed to process the image. "
+                "Try a smaller image or lower resolution and run again."
+            )
+        _append_log("vlm_frontend", f"[error] {detail}")
+        raise HTTPException(status_code=502, detail=detail)
+    except Exception as exc:
+        _append_log("vlm_frontend", f"[error] {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/modules/vlm_frontend/delete")
+def vlm_frontend_delete(payload: LLMDelete):
+    path = Path(payload.path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Model file not found")
+    path.unlink()
+    return {"ok": True}
+
+
+@app.post("/modules/vlm_frontend/download")
+def vlm_frontend_download(payload: LLMDownload):
+    from huggingface_hub import hf_hub_download
+
+    settings = _get_settings()
+    model_dir = Path(settings.get("vlm_model_dir", DEFAULT_SETTINGS["vlm_model_dir"]))
+    model_dir.mkdir(parents=True, exist_ok=True)
+    hf_hub_download(
+        repo_id=payload.repo_id,
+        filename=payload.filename,
+        local_dir=str(model_dir),
+        local_dir_use_symlinks=False,
+    )
+    return {"ok": True}
+
+
+@app.get("/modules/vlm_frontend/logs")
+def vlm_frontend_logs(lines: int = 200):
+    return {"lines": _tail_log("vlm_frontend", lines)}
+
+
 @app.get("/modules/ml_sharp/state")
 def mlsharp_state():
     scenes = _mlsharp_list_scenes()
@@ -2138,6 +2702,7 @@ def model3d_state():
         "running": _is_running("model_3d"),
         "output_base": str(MODEL3D_OUTPUT_BASE),
         "last_output_dir": config.get("last_output_dir"),
+        "hunyuan_enable_texture": bool(config.get("hunyuan_enable_texture", False)),
         "hf_token_saved": token_saved,
     }
 
@@ -2213,10 +2778,22 @@ def model3d_run(payload: Model3DRun):
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     python_path = sys.executable.replace("pythonw.exe", "python.exe")
     repo_path = _model3d_repo_path(backend)
+    config = _model3d_load_config()
+
+    enable_texture = bool(config.get("hunyuan_enable_texture", False))
+    if payload.enable_texture is not None:
+        enable_texture = bool(payload.enable_texture)
+        config["hunyuan_enable_texture"] = enable_texture
+
     if backend == "stepx1":
         script_path = _model3d_write_stepx1_script(input_paths[0], output_dir, repo_path)
     elif backend == "hunyuan3d2":
-        script_path = _model3d_write_hunyuan_script(input_paths[0], output_dir, repo_path)
+        script_path = _model3d_write_hunyuan_script(
+            input_paths[0],
+            output_dir,
+            repo_path,
+            enable_texture=enable_texture,
+        )
     elif backend == "sam3d":
         if len(input_paths) < 2:
             raise HTTPException(status_code=400, detail="sam3d requires image and mask")
@@ -2224,7 +2801,6 @@ def model3d_run(payload: Model3DRun):
     else:
         raise HTTPException(status_code=400, detail="Backend not supported")
     _run_cmd("model3d", [python_path, str(script_path)], cwd=repo_path)
-    config = _model3d_load_config()
     config["last_output_dir"] = output_dir
     _model3d_save_config(config)
     return {"ok": True, "output_dir": output_dir}
@@ -2303,7 +2879,7 @@ def neutts_deps(payload: NeuttsDeps):
     if not req_path.exists():
         raise HTTPException(status_code=404, detail="requirements.txt not found")
     python_path = sys.executable.replace("pythonw.exe", "python.exe")
-    packages = ["-r", str(req_path), "soundfile"]
+    packages = ["-r", str(req_path), "soundfile", "torchao", "torchvision==0.23.0"]
     if payload.repo_id.endswith("gguf"):
         packages.append("llama-cpp-python")
     _run_cmd("neutts", [python_path, "-m", "pip", "install", *packages], cwd=NEUTTS_BACKEND_DIR)
@@ -2320,6 +2896,7 @@ def neutts_generate(payload: NeuttsGenerate):
         raise HTTPException(status_code=400, detail="Reference audio is required")
     if not payload.ref_text.strip():
         raise HTTPException(status_code=400, detail="Reference text is required")
+    _neutts_espeak_status()
     script_path = NEUTTS_DATA_DIR / "neutts_run.py"
     if not script_path.exists():
         raise HTTPException(status_code=404, detail="neutts_run.py not found")
@@ -2372,9 +2949,10 @@ def finetune_glm_state():
             deps[pkg] = importlib.metadata.version(pkg)
         except Exception:
             deps[pkg] = ""
+    peft_ok = _version_at_least(deps.get("peft", ""), "0.17.0")
     return {
         "deps": deps,
-        "deps_ok": all(deps.values()),
+        "deps_ok": all(deps.values()) and peft_ok,
         "running": _is_running("finetune_glm"),
         "output_dir": str(FINETUNE_OUTPUT_DIR),
         "script_ok": FINETUNE_SCRIPT_PATH.exists(),
@@ -2389,7 +2967,7 @@ def finetune_glm_deps():
         "transformers==5.0.0rc3",
         "datasets",
         "trl",
-        "peft",
+        "peft>=0.17.0",
         "accelerate",
     ]
     _run_cmd("finetune_glm", [python_path, "-m", "pip", "install", "--pre", *packages])

@@ -1,6 +1,58 @@
 import argparse
 import os
+import sys
 from pathlib import Path
+
+
+def _patch_torch_for_diffusers():
+    """
+    Fix PyTorch 2.4+ compatibility with diffusers' flash attention custom ops.
+    
+    The issue: diffusers tries to register custom PyTorch ops with type annotations
+    that newer PyTorch versions don't accept. This bypass prevents the registration
+    and uses the fallback implementation.
+    """
+    try:
+        import torch._library.custom_ops as custom_ops_module
+        
+        original_define = custom_ops_module.define
+        
+        def patched_define(name, *args, **kwargs):
+            """Wrapper that skips registration for known problematic functions"""
+            def decorator(fn):
+                # Skip custom op registration for difussers' flash attention functions
+                if "_wrapped_flash_attn" in name or "flash_attention" in name:
+                    return fn  # Return unwrapped function
+                return original_define(name, *args, **kwargs)(fn)
+            return decorator
+        
+        custom_ops_module.define = patched_define
+        
+    except Exception:
+        pass  # If outer patch fails, try another approach
+    
+    try:
+        import torch._library
+        
+        # Also patch the register_op function that gets called internally
+        if hasattr(torch._library, "impl"):
+            original_torch_def = getattr(torch._library.impl, "_define", None)
+            if original_torch_def:
+                def patched_torch_def(*args, **kwargs):
+                    try:
+                        return original_torch_def(*args, **kwargs)
+                    except (ValueError, RuntimeError) as e:
+                        if "_wrapped_flash_attn" in str(args) or "flash_attention" in str(args):
+                            return None
+                        raise
+                
+                torch._library.impl._define = patched_torch_def
+    except Exception:
+        pass
+
+
+# Apply patch immediately before any imports
+_patch_torch_for_diffusers()
 
 
 def load_hf_token():
@@ -66,7 +118,43 @@ def main():
         raise SystemExit("Prompt is required.")
 
     import torch
-    from diffusers import Flux2KleinPipeline
+    
+    try:
+        from diffusers import Flux2KleinPipeline
+    except (ImportError, ValueError, RuntimeError) as e:
+        message = str(e)
+        if "Qwen3ForCausalLM" in message:
+            print(
+                "\n" + "="*80,
+                "COMPATIBILITY ERROR: transformers could not load Qwen3ForCausalLM.",
+                "="*80,
+                "\nThis is usually caused by torchao 0.16.x with torch 2.5.0.",
+                "\nFix:",
+                "1. Remove torchao:   python -m pip uninstall -y torchao",
+                "2. Reinstall deps:   python -m pip install --upgrade diffusers transformers accelerate safetensors huggingface_hub pillow",
+                "\nAfter that, run Flux 2 Klein again.",
+                "="*80,
+                sep="\n",
+                flush=True,
+            )
+            raise SystemExit(f"Cannot import Flux2KleinPipeline: {e}") from e
+        if "infer_schema" in str(e) and "_wrapped_flash_attn" in str(e):
+            print(
+                "\n" + "="*80,
+                "COMPATIBILITY ERROR: PyTorch/diffusers version mismatch detected.",
+                "="*80,
+                "\nThe Flux2Klein model requires compatible versions of PyTorch and diffusers.",
+                "\nPossible solutions:",
+                "1. Upgrade diffusers:  pip install --upgrade diffusers",
+                "2. Downgrade PyTorch:  Use a stable 2.0.x or 2.1.x version",
+                "3. Reinstall both:     pip install --upgrade --force-reinstall torch diffusers",
+                "\nFor immediate use, try reducing the constraint by updating packages.",
+                "="*80,
+                sep="\n",
+                flush=True,
+            )
+            raise SystemExit(f"Cannot import Flux2KleinPipeline: {e}") from e
+        raise
 
     device = resolve_device(args.device)
     dtype = torch.float16 if device == "cuda" else torch.float32

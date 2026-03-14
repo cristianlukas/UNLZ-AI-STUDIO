@@ -1,6 +1,7 @@
 {
   "language": "es",
   "model_dir": "C:\\models",
+  "vlm_model_dir": "C:\\models\\qwen2.5-vl-gguf",
   "show_logs": true,
   "theme": "Light",
   "rag_endpoint": "http://127.0.0.1:8080/v1/chat/completions"

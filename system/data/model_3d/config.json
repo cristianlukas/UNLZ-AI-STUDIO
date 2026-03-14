@@ -14,5 +14,7 @@
     }
   },
   "backend": "hunyuan3d2",
-  "python_path": ""
+  "python_path": "",
+  "hunyuan_enable_texture": false,
+  "last_output_dir": "D:\\Descargas\\_Facultad\\PPS\\Repositorio\\UNLZ-AI-STUDIO\\system\\3d-out\\model3d_2026-03-11_02-11-23"
 }

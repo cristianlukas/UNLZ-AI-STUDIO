@@ -6,6 +6,7 @@ import subprocess
 import logging
 from pathlib import Path
 from tkinter import messagebox
+import psutil
 
 from modules.base import StudioModule
 
@@ -228,6 +229,14 @@ class CyberScraperView(ctk.CTkFrame):
         python_path = sys.executable.replace("pythonw.exe", "python.exe")
         self.log(self.tr("cyber_msg_installing_playwright"))
         self.set_busy(True)
+        self._current_action = "playwright_pip"
+        self.run_process([python_path, "-m", "pip", "install", "playwright"], on_done=self.on_playwright_pip_done)
+
+    def on_playwright_pip_done(self, returncode):
+        if returncode != 0:
+            self.on_process_done(returncode)
+            return
+        python_path = sys.executable.replace("pythonw.exe", "python.exe")
         self._current_action = "playwright"
         self.run_process([python_path, "-m", "playwright", "install"], on_done=self.on_process_done)
 
@@ -243,8 +252,24 @@ class CyberScraperView(ctk.CTkFrame):
             messagebox.showwarning(self.tr("status_error"), self.tr("cyber_msg_invalid_port"))
             return
 
+        port_int = int(port)
+        if not self.ensure_cyberscraper_port_available(port_int):
+            return
+
         python_path = sys.executable.replace("pythonw.exe", "python.exe")
-        cmd = [python_path, "-m", "streamlit", "run", "main.py", "--server.port", port]
+        cmd = [
+            python_path,
+            "-m",
+            "streamlit",
+            "run",
+            "main.py",
+            "--server.port",
+            port,
+            "--server.headless",
+            "true",
+            "--browser.gatherUsageStats",
+            "false",
+        ]
         env = os.environ.copy()
         self.apply_env(env)
 
@@ -273,6 +298,60 @@ class CyberScraperView(ctk.CTkFrame):
                 self.after(0, self.on_server_exit)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def ensure_cyberscraper_port_available(self, port: int) -> bool:
+        """Ensure target port is free, auto-stopping stale CyberScraper servers."""
+        try:
+            for conn in psutil.net_connections(kind="tcp"):
+                if not conn.laddr or conn.laddr.port != port:
+                    continue
+                if conn.status != psutil.CONN_LISTEN:
+                    continue
+                if not conn.pid:
+                    continue
+
+                try:
+                    proc = psutil.Process(conn.pid)
+                    cmdline = " ".join(proc.cmdline()).lower()
+                    try:
+                        proc_cwd = (proc.cwd() or "").lower()
+                    except Exception:
+                        proc_cwd = ""
+                    is_cyberscraper = (
+                        "streamlit" in cmdline
+                        and "main.py" in cmdline
+                        and (
+                            "cyberscraper-2077" in cmdline
+                            or "cyberscraper-2077" in proc_cwd
+                        )
+                    )
+
+                    if is_cyberscraper:
+                        self.log(f"Detected stale CyberScraper process on port {port} (PID {proc.pid}). Restarting it.")
+                        for child in proc.children(recursive=True):
+                            try:
+                                child.terminate()
+                            except Exception:
+                                pass
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=5)
+                        except Exception:
+                            proc.kill()
+                        return True
+
+                    owner = proc.name()
+                    messagebox.showwarning(
+                        self.tr("status_error"),
+                        f"Port {port} is already in use by {owner} (PID {proc.pid}). Please stop that process or use another port.",
+                    )
+                    return False
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+            return True
+        except Exception as exc:
+            self.log(f"Warning: could not check port ownership for {port}: {exc}")
+            return True
 
     def stop_server(self):
         if not self._server_process:

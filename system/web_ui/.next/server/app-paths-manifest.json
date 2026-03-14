@@ -1,1 +1,4 @@
-{}
+{
+  "/modules/vlm_frontend/page": "app/modules/vlm_frontend/page.js",
+  "/modules/llm_frontend/page": "app/modules/llm_frontend/page.js"
+}

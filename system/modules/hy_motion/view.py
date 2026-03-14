@@ -112,14 +112,26 @@ class HYMotionView(ctk.CTkFrame):
 
         buttons = ctk.CTkFrame(usage, fg_color="transparent")
         buttons.grid(row=7, column=0, sticky="w", padx=10, pady=(0, 10))
-        ctk.CTkButton(buttons, text=self.tr("hymotion_btn_download_weights"), command=self.download_weights).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(buttons, text=self.tr("hymotion_btn_run"), command=self.run_generation).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(buttons, text=self.tr("hymotion_btn_open_output"), command=self.open_output_folder).pack(side="left")
+        self.btn_download_weights = ctk.CTkButton(buttons, text=self.tr("hymotion_btn_download_weights"), command=self.download_weights)
+        self.btn_download_weights.pack(side="left", padx=(0, 8))
+        self.btn_run = ctk.CTkButton(buttons, text=self.tr("hymotion_btn_run"), command=self.run_generation)
+        self.btn_run.pack(side="left", padx=(0, 8))
+        self.btn_open_output = ctk.CTkButton(buttons, text=self.tr("hymotion_btn_open_output"), command=self.open_output_folder)
+        self.btn_open_output.pack(side="left")
 
     def refresh_buttons(self):
         self.backend_dir = self.resolve_backend_dir()
+        action_buttons = (
+            self.btn_install,
+            self.btn_uninstall,
+            self.btn_deps,
+            self.btn_open,
+            self.btn_download_weights,
+            self.btn_run,
+            self.btn_open_output,
+        )
         if self._busy:
-            for btn in (self.btn_install, self.btn_uninstall, self.btn_deps, self.btn_open):
+            for btn in action_buttons:
                 btn.configure(state="disabled")
             return
 
@@ -143,7 +155,7 @@ class HYMotionView(ctk.CTkFrame):
             if not self.btn_install.winfo_manager():
                 self.btn_install.pack(side="left", padx=5)
             self._deps_installed = False
-        for btn in (self.btn_install, self.btn_uninstall, self.btn_deps, self.btn_open):
+        for btn in action_buttons:
             btn.configure(state="normal")
 
     def set_busy(self, busy):
@@ -169,6 +181,7 @@ class HYMotionView(ctk.CTkFrame):
         self.run_process(
             ["git", "clone", "--depth", "1", "https://github.com/Tencent-Hunyuan/HY-Motion-1.0", str(self.backend_dir)],
             on_done=self.on_process_done,
+            cwd=self.backend_dir.parent,
         )
 
     def uninstall_backend(self):
@@ -218,16 +231,20 @@ class HYMotionView(ctk.CTkFrame):
         except Exception:
             return False
 
-    def run_process(self, cmd, on_done=None):
+    def run_process(self, cmd, on_done=None, cwd=None, env=None):
         def worker():
             try:
+                process_env = os.environ.copy()
+                if env:
+                    process_env.update(env)
                 process = subprocess.Popen(
                     cmd,
-                    cwd=str(self.backend_dir.parent),
+                    cwd=str(cwd) if cwd else str(self.backend_dir),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
                     creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+                    env=process_env,
                 )
                 buffer = []
                 while True:
@@ -271,15 +288,35 @@ class HYMotionView(ctk.CTkFrame):
         self._current_action = None
         self.refresh_buttons()
 
+    def prepare_requirements_path(self, req_path):
+        if sys.version_info < (3, 12):
+            return req_path
+        try:
+            content = req_path.read_text(encoding="utf-8")
+            updated = content.replace("PyYAML==6.0", "PyYAML==6.0.2")
+            if updated == content:
+                return req_path
+            temp_dir = self.app_root / "system" / "data" / "hymotion"
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            temp_req_path = temp_dir / "requirements_py312.txt"
+            temp_req_path.write_text(updated, encoding="utf-8")
+            return temp_req_path
+        except Exception as exc:
+            self.log(f"{self.tr('status_error')}: {exc}")
+            return req_path
+
     def on_deps_prereq_done(self, returncode, req_path):
         if returncode != 0:
             self.set_busy(False)
             self.log(self.tr("hymotion_msg_failed").format(returncode))
             return
         python_path = sys.executable.replace("pythonw.exe", "python.exe")
-        self.run_process([python_path, "-m", "pip", "install", "-r", str(req_path)], on_done=self.on_process_done)
+        install_req_path = self.prepare_requirements_path(req_path)
+        self.run_process([python_path, "-m", "pip", "install", "-r", str(install_req_path)], on_done=self.on_process_done)
 
     def download_weights(self):
+        if self._busy:
+            return
         if not self.backend_dir.exists():
             messagebox.showwarning(self.tr("status_error"), self.tr("hymotion_msg_not_installed"))
             return
@@ -312,6 +349,8 @@ class HYMotionView(ctk.CTkFrame):
         self.refresh_buttons()
 
     def run_generation(self):
+        if self._busy:
+            return
         if not self.backend_dir.exists():
             messagebox.showwarning(self.tr("status_error"), self.tr("hymotion_msg_not_installed"))
             return
@@ -333,23 +372,32 @@ class HYMotionView(ctk.CTkFrame):
         prompt_path.write_text(prompt, encoding="utf-8")
 
         python_path = sys.executable.replace("pythonw.exe", "python.exe")
+        try:
+            import torch
+
+            if not torch.cuda.is_available():
+                self.log("HY-Motion is running on CPU because torch.cuda.is_available() is False. Generation can take a very long time.")
+        except Exception:
+            pass
         self.log(self.tr("hymotion_msg_running"))
         self.set_busy(True)
         self._current_action = "run"
         self.run_process(
             [
                 python_path,
+                "-u",
                 str(self.backend_dir / "local_infer.py"),
                 "--model_path",
                 str(model_path),
                 "--input_text_dir",
-                str(prompt_path.parent),
+                str(prompt_path),
                 "--output_dir",
                 str(output_dir),
                 "--disable_duration_est",
                 "--disable_rewrite",
             ],
             on_done=self.on_run_done,
+            env={"USE_HF_MODELS": "1", "PYTHONUNBUFFERED": "1"},
         )
 
     def on_run_done(self, returncode):

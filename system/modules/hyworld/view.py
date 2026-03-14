@@ -5,7 +5,9 @@ import threading
 import subprocess
 import time
 import logging
+import socket
 from pathlib import Path
+from typing import Optional
 from tkinter import filedialog, messagebox
 
 from modules.base import StudioModule
@@ -40,6 +42,7 @@ class HYWorldView(ctk.CTkFrame):
         self.backend_dir = self.app_root / "system" / "ai-backends" / "HunyuanWorld-Mirror"
         self.output_dir = self.app_root / "system" / "hyworld-out"
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self._msvc_bin_cache = None
 
         self._mode_options = {
             self.tr("hyworld_mode_demo"): "demo",
@@ -158,6 +161,111 @@ class HYWorldView(ctk.CTkFrame):
         except Exception:
             return False
 
+    def _find_msvc_bin_dir(self) -> Optional[str]:
+        if os.name != "nt":
+            return None
+        if self._msvc_bin_cache is not None:
+            return self._msvc_bin_cache
+
+        candidates = []
+        vswhere = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Microsoft Visual Studio" / "Installer" / "vswhere.exe"
+        if vswhere.exists():
+            try:
+                install_path = subprocess.check_output(
+                    [
+                        str(vswhere),
+                        "-latest",
+                        "-products",
+                        "*",
+                        "-requires",
+                        "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+                        "-property",
+                        "installationPath",
+                    ],
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                ).strip()
+                if install_path:
+                    candidates.append(Path(install_path))
+            except Exception:
+                pass
+
+        base_vs = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Microsoft Visual Studio" / "2022"
+        for sku in ("BuildTools", "Community", "Professional", "Enterprise"):
+            p = base_vs / sku
+            if p.exists():
+                candidates.append(p)
+
+        seen = set()
+        for install_dir in candidates:
+            if str(install_dir) in seen:
+                continue
+            seen.add(str(install_dir))
+            msvc_root = install_dir / "VC" / "Tools" / "MSVC"
+            if not msvc_root.exists():
+                continue
+            versions = sorted([d for d in msvc_root.iterdir() if d.is_dir()], key=lambda d: d.name, reverse=True)
+            for version_dir in versions:
+                hostx64 = version_dir / "bin" / "Hostx64" / "x64"
+                if (hostx64 / "cl.exe").exists():
+                    self._msvc_bin_cache = str(hostx64)
+                    return self._msvc_bin_cache
+
+        self._msvc_bin_cache = ""
+        return None
+
+    def _build_runtime_env(self, extra_env=None):
+        import subprocess as _sp
+        runtime_env = os.environ.copy()
+        if extra_env:
+            runtime_env.update(extra_env)
+
+        # Run vcvarsall.bat x64 to set up the full MSVC environment
+        # (PATH, INCLUDE, LIB, LIBPATH, WindowsSdkDir, etc.)
+        # We check INCLUDE rather than just cl.exe in PATH because cl.exe
+        # also needs SDK headers/libs to compile anything.
+        if not runtime_env.get("INCLUDE"):
+            vcvarsall = None
+            for vs_root in [
+                r"C:\Program Files\Microsoft Visual Studio",
+                r"C:\Program Files (x86)\Microsoft Visual Studio",
+            ]:
+                import glob as _gl
+                pattern = os.path.join(vs_root, "*", "*", "VC", "Auxiliary", "Build", "vcvarsall.bat")
+                candidates = sorted(_gl.glob(pattern), reverse=True)
+                if candidates:
+                    vcvarsall = candidates[0]
+                    break
+            if vcvarsall:
+                try:
+                    out = _sp.check_output(
+                        f'cmd /c "{vcvarsall}" x64 && set',
+                        shell=True, stderr=_sp.STDOUT,
+                        encoding="cp1252", errors="replace"
+                    )
+                    for line in out.splitlines():
+                        if "=" in line:
+                            k, _, v = line.partition("=")
+                            k = k.strip()
+                            if k and not any(c in k for c in (" ", "[", "*")):
+                                runtime_env[k] = v
+                    self.safe_log(f"[HYWorld] MSVC environment loaded from: {vcvarsall}")
+                except Exception as e:
+                    self.safe_log(f"[HYWorld] vcvarsall setup failed: {e}")
+                    # Fallback: just add the bin dir to PATH
+                    msvc_bin = self._find_msvc_bin_dir()
+                    if msvc_bin:
+                        runtime_env["PATH"] = msvc_bin + os.pathsep + runtime_env.get("PATH", "")
+                        self.safe_log(f"[HYWorld] Fallback: added MSVC bin to PATH: {msvc_bin}")
+            else:
+                # No vcvarsall found — try bare PATH injection as last resort
+                msvc_bin = self._find_msvc_bin_dir()
+                if msvc_bin:
+                    runtime_env["PATH"] = msvc_bin + os.pathsep + runtime_env.get("PATH", "")
+                    self.safe_log(f"[HYWorld] Added MSVC bin to PATH: {msvc_bin}")
+
+        return runtime_env
+
     def install_backend(self):
         if self.backend_dir.exists():
             self.log(self.tr("hyworld_msg_already_installed"))
@@ -171,7 +279,16 @@ class HYWorldView(ctk.CTkFrame):
         self.set_busy(True)
         self._current_action = "install"
         self.run_process(
-            ["git", "clone", "--depth", "1", "https://github.com/Tencent-Hunyuan/HunyuanWorld-Mirror", str(self.backend_dir)],
+            [
+                "git",
+                "clone",
+                "--depth",
+                "1",
+                "--recursive",
+                "--shallow-submodules",
+                "https://github.com/Tencent-Hunyuan/HunyuanWorld-Mirror",
+                str(self.backend_dir),
+            ],
             on_done=self.on_process_done,
         )
 
@@ -202,7 +319,46 @@ class HYWorldView(ctk.CTkFrame):
         self.log(self.tr("hyworld_msg_installing_deps").format(req_name))
         self.set_busy(True)
         self._current_action = "deps"
-        self.run_process([python_path, "-m", "pip", "install", "-r", str(req_path)], on_done=self.on_process_done)
+        install_script = self.build_deps_install_script(str(req_path), str(self.backend_dir))
+        self.run_process([python_path, "-c", install_script], on_done=self.on_process_done)
+
+    def build_deps_install_script(self, req_path: str, backend_dir: str) -> str:
+        # Install requirements and then ensure gsplat is available for demo/inference rendering.
+        return (
+            "import importlib.util\n"
+            "import os\n"
+            "import shutil\n"
+            "import subprocess\n"
+            "import sys\n"
+            f"req_path = {req_path!r}\n"
+            f"backend_dir = {backend_dir!r}\n"
+            "print(f'[hyworld] installing dependencies from {req_path}', flush=True)\n"
+            "rc = subprocess.call([sys.executable, '-m', 'pip', 'install', '-r', req_path])\n"
+            "if rc != 0:\n"
+            "    raise SystemExit(rc)\n"
+            "glm_header = os.path.join(backend_dir, 'submodules', 'gsplat', 'gsplat', 'cuda', 'csrc', 'third_party', 'glm', 'glm', 'gtc', 'type_ptr.hpp')\n"
+            "if not os.path.exists(glm_header):\n"
+            "    print('[hyworld] missing local gsplat GLM headers, fetching glm...', flush=True)\n"
+            "    third_party = os.path.join(backend_dir, 'submodules', 'gsplat', 'gsplat', 'cuda', 'csrc', 'third_party')\n"
+            "    os.makedirs(third_party, exist_ok=True)\n"
+            "    glm_dir = os.path.join(third_party, 'glm')\n"
+            "    if os.path.exists(glm_dir):\n"
+            "        shutil.rmtree(glm_dir, ignore_errors=True)\n"
+            "    rc = subprocess.call(['git', 'clone', '--depth', '1', 'https://github.com/g-truc/glm.git', glm_dir])\n"
+            "    if rc != 0:\n"
+            "        raise SystemExit(rc)\n"
+            "if importlib.util.find_spec('gsplat') is None:\n"
+            "    print('[hyworld] gsplat missing, trying official wheel index', flush=True)\n"
+            "    rc = subprocess.call([\n"
+            "        sys.executable, '-m', 'pip', 'install', 'gsplat',\n"
+            "        '--index-url', 'https://docs.gsplat.studio/whl/pt24cu124'\n"
+            "    ])\n"
+            "    if rc != 0:\n"
+            "        print('[hyworld] fallback: installing gsplat from default index', flush=True)\n"
+            "        rc = subprocess.call([sys.executable, '-m', 'pip', 'install', 'gsplat'])\n"
+            "    raise SystemExit(rc)\n"
+            "print('[hyworld] gsplat already available', flush=True)\n"
+        )
 
     def download_weights(self):
         if not self.backend_dir.exists():
@@ -241,10 +397,14 @@ class HYWorldView(ctk.CTkFrame):
         if not app_path.exists():
             messagebox.showwarning(self.tr("status_error"), self.tr("hyworld_msg_app_missing"))
             return
+        port = self.pick_gradio_port()
+        run_env = os.environ.copy()
+        run_env["GRADIO_SERVER_PORT"] = str(port)
         self.log(self.tr("hyworld_msg_running_demo"))
+        self.log(f"[HYWorld] GRADIO_SERVER_PORT={port}")
         self.set_busy(True)
         self._current_action = "run"
-        self.run_process([python_path, str(app_path)], on_done=self.on_process_done)
+        self.run_process([python_path, str(app_path)], on_done=self.on_process_done, env=run_env)
 
     def run_inference(self):
         input_path = self.input_entry.get().strip()
@@ -295,9 +455,30 @@ class HYWorldView(ctk.CTkFrame):
             self.input_entry.delete(0, "end")
             self.input_entry.insert(0, file_path)
 
-    def run_process(self, cmd, on_done=None):
+    def is_port_free(self, port: int) -> bool:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(0.2)
+                return s.connect_ex(("127.0.0.1", int(port))) != 0
+        except Exception:
+            return False
+
+    def pick_gradio_port(self) -> int:
+        preferred = [7860, 7861, 7862, 7863, 8082, 8090, 18080]
+        for port in preferred:
+            if self.is_port_free(port):
+                return port
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("127.0.0.1", 0))
+                return int(s.getsockname()[1])
+        except Exception:
+            return 7860
+
+    def run_process(self, cmd, on_done=None, env=None):
         def worker():
             try:
+                runtime_env = self._build_runtime_env(env)
                 process = subprocess.Popen(
                     cmd,
                     cwd=str(self.backend_dir) if self.backend_dir.exists() else None,
@@ -305,6 +486,7 @@ class HYWorldView(ctk.CTkFrame):
                     stderr=subprocess.STDOUT,
                     text=True,
                     creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+                    env=runtime_env,
                 )
                 for line in process.stdout:
                     self.safe_log(line.rstrip())

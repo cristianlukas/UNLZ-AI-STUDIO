@@ -520,6 +520,11 @@ class SpotEditView(ctk.CTkFrame):
     def on_inpaint_done(self, returncode, output_path):
         self.set_busy(False)
         if returncode != 0:
+            if returncode == 3221225477:
+                self.log(self.tr("spotedit_msg_failed").format(returncode))
+                self.log("SpotEdit backend crashed with Windows access violation (0xC0000005).")
+                self.log("Backend now auto-forces safer CPU loading mode on low-VRAM GPUs.")
+                return
             self.log(self.tr("spotedit_msg_failed").format(returncode))
             return
         try:
@@ -535,14 +540,6 @@ class SpotEditView(ctk.CTkFrame):
             except Exception:
                 pass
         self.log(self.tr("spotedit_msg_saved").format(output_path))
-        out_dir = self.output_dir
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / f"spotedit_{int(time.time() * 1000)}.png"
-        Image.fromarray(output).save(out_path)
-        self.base_image = Image.fromarray(output).convert("RGB")
-        self.mask_image = Image.new("L", self.base_image.size, 0)
-        self.render_canvas()
-        self.log(self.tr("spotedit_msg_saved").format(out_path))
 
     def open_output_folder(self):
         self.output_dir.mkdir(parents=True, exist_ok=True)

@@ -34,6 +34,7 @@ except Exception as e:
 
 # Import modules
 from modules.llm_frontend import LLMFrontendModule
+from modules.vlm_frontend import VLMFrontendModule
 from modules.inclu_ia import IncluIAModule
 from modules.monitor import MonitorModule
 from modules.research_assistant import ResearchAssistantModule
@@ -256,6 +257,12 @@ class StudioGUI(ctk.CTk):
                 "title_key": "mod_llm_title",
                 "desc_key": "mod_llm_desc",
                 "icon": "AI"
+            },
+            "vlm_frontend": {
+                "class": VLMFrontendModule,
+                "title_key": "mod_vlm_title",
+                "desc_key": "mod_vlm_desc",
+                "icon": "VL"
             },
             "finetune_glm": {
                 "class": FinetuneGLMModule,

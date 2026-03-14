@@ -10,6 +10,37 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog
 
 from modules.base import StudioModule
+from .neutts_espeak import detect_espeak_status
+
+
+def _error_chain_text(exc: Exception) -> str:
+    parts = []
+    seen = set()
+    stack = [exc]
+    while stack:
+        current = stack.pop(0)
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        text = str(current)
+        if text:
+            parts.append(text)
+        cause = getattr(current, "__cause__", None)
+        context = getattr(current, "__context__", None)
+        if cause is not None:
+            stack.append(cause)
+        if context is not None:
+            stack.append(context)
+    return "\n".join(parts).lower()
+
+
+def _is_torchvision_mismatch(exc: Exception) -> bool:
+    text = _error_chain_text(exc)
+    return (
+        "torchvision::nms" in text
+        or "could not import module 'hubertmodel'" in text
+        or "from torchvision.transforms import interpolationmode" in text
+    )
 
 
 class NeuttsModule(StudioModule):
@@ -194,6 +225,14 @@ class NeuttsView(ctk.CTkFrame):
                 btn.configure(state="disabled")
             return
 
+        for btn in (
+            self.btn_install, self.btn_uninstall, self.btn_deps, self.btn_open, self.btn_repo, self.btn_espeak,
+            self.btn_detect_espeak,
+            self.btn_generate, self.btn_preview, self.btn_stop_audio, self.btn_save, self.btn_open_output,
+            self.btn_ref_audio, self.btn_ref_record, self.btn_ref_text
+        ):
+            btn.configure(state="normal")
+
         installed = self.backend_dir.exists()
         deps_ok = self.check_deps_available()
         if installed:
@@ -220,26 +259,35 @@ class NeuttsView(ctk.CTkFrame):
             self.btn_espeak.pack(side="left", padx=5)
 
     def check_deps_available(self):
+        backend_added = False
+        backend_path = str(self.backend_dir)
+        if self.backend_dir.exists() and backend_path not in sys.path:
+            sys.path.insert(0, backend_path)
+            backend_added = True
         try:
             import neutts  # noqa: F401
+        except Exception as exc:
+            if not _is_torchvision_mismatch(exc):
+                if backend_added and sys.path and sys.path[0] == backend_path:
+                    sys.path.pop(0)
+                return False
+        try:
             import soundfile  # noqa: F401
         except Exception:
+            if backend_added and sys.path and sys.path[0] == backend_path:
+                sys.path.pop(0)
             return False
         needs_gguf = bool(self.current_repo and self.current_repo.endswith("gguf"))
         if needs_gguf:
             try:
                 import llama_cpp  # noqa: F401
             except Exception:
+                if backend_added and sys.path and sys.path[0] == backend_path:
+                    sys.path.pop(0)
                 return False
+        if backend_added and sys.path and sys.path[0] == backend_path:
+            sys.path.pop(0)
         return True
-
-        for btn in (
-            self.btn_install, self.btn_uninstall, self.btn_deps, self.btn_open, self.btn_repo, self.btn_espeak,
-            self.btn_detect_espeak,
-            self.btn_generate, self.btn_preview, self.btn_stop_audio, self.btn_save, self.btn_open_output,
-            self.btn_ref_audio, self.btn_ref_record, self.btn_ref_text
-        ):
-            btn.configure(state="normal")
 
     def on_model_group_change(self, value=None):
         selected = value or self.model_group.get()
@@ -298,7 +346,7 @@ class NeuttsView(ctk.CTkFrame):
             messagebox.showwarning(self.tr("status_error"), self.tr("neutts_msg_requirements_missing"))
             return
         python_path = sys.executable.replace("pythonw.exe", "python.exe")
-        packages = ["-r", str(req_path), "soundfile"]
+        packages = ["-r", str(req_path), "soundfile", "torchao", "torchvision==0.23.0"]
         if self.current_repo and self.current_repo.endswith("gguf"):
             packages.append("llama-cpp-python")
         self.set_busy(True)
@@ -324,17 +372,8 @@ class NeuttsView(ctk.CTkFrame):
         self.update_espeak_status()
 
     def check_espeak_available(self):
-        from shutil import which
-        exe = which("espeak-ng") or which("espeak")
-        if exe:
-            return True, exe
-        lib_path = os.environ.get("PHONEMIZER_ESPEAK_LIBRARY", "")
-        bin_path = os.environ.get("PHONEMIZER_ESPEAK_PATH", "")
-        if lib_path and Path(lib_path).exists():
-            return True, lib_path
-        if bin_path and Path(bin_path).exists():
-            return True, bin_path
-        return False, ""
+        status = detect_espeak_status(update_env=True)
+        return status["ok"], status["detail"]
 
     def update_espeak_status(self):
         ok, detail = self.check_espeak_available()
