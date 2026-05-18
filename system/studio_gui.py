@@ -43,6 +43,7 @@ from modules.spotedit import SpotEditModule
 from modules.finetune_glm import FinetuneGLMModule
 from modules.hy_motion import HYMotionModule
 from modules.proedit import ProEditModule
+from modules.scenema_audio import ScenemaAudioModule
 from modules.neutts import NeuttsModule
 from modules.klein import KleinModule
 from modules.hyworld import HYWorldModule
@@ -311,6 +312,12 @@ class StudioGUI(ctk.CTk):
                 "title_key": "mod_hymotion_title",
                 "desc_key": "mod_hymotion_desc",
                 "icon": "HM"
+            },
+            "scenema_audio": {
+                "class": ScenemaAudioModule,
+                "title_key": "mod_scenema_title",
+                "desc_key": "mod_scenema_desc",
+                "icon": "SA"
             },
             "neutts": {
                 "class": NeuttsModule,

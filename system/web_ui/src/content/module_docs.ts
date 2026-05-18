@@ -219,6 +219,28 @@ export const MODULE_DOCS: Record<string, ModuleDoc> = {
       "Revisar salida y ajustar parametros si es necesario.",
     ],
   },
+  scenema_audio: {
+    title: "Scenema Audio",
+    summary:
+      "Modulo de referencia para clonado de voz expresivo zero-shot basado en una fuente curada.",
+    what_is:
+      "Acceso directo a una publicacion externa para explorar el enfoque Scenema Audio y evaluar su potencial de integracion.",
+    purpose:
+      "Centralizar la referencia dentro del catalogo del estudio y facilitar seguimiento tecnico del metodo.",
+    use_cases: [
+      "Revisar demos y resultados compartidos por la comunidad.",
+      "Evaluar viabilidad para un futuro backend local.",
+      "Documentar una fuente externa relevante en el catalogo.",
+      "Usar como punto de partida para pruebas de voz expresiva.",
+    ],
+    how_to: [
+      "Instalar el modulo desde la tienda.",
+      "Abrir su pagina de detalle.",
+      "Ingresar al enlace de fuente integrada.",
+      "Revisar contenido tecnico y discusiones.",
+      "Registrar hallazgos para una futura implementacion.",
+    ],
+  },
   neutts: {
     title: "NeuTTS",
     summary:

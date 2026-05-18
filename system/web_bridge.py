@@ -61,6 +61,7 @@ AVAILABLE_MODULES = [
     {"key": "spotedit", "title_key": "mod_spotedit_title", "desc_key": "mod_spotedit_desc", "category": "vision"},
     {"key": "hy_motion", "title_key": "mod_hymotion_title", "desc_key": "mod_hymotion_desc", "category": "motion"},
     {"key": "proedit", "title_key": "mod_proedit_title", "desc_key": "mod_proedit_desc", "category": "vision"},
+    {"key": "scenema_audio", "title_key": "mod_scenema_title", "desc_key": "mod_scenema_desc", "category": "audio"},
     {"key": "neutts", "title_key": "mod_neutts_title", "desc_key": "mod_neutts_desc", "category": "audio"},
     {"key": "finetune_glm", "title_key": "mod_finetune_glm_title", "desc_key": "mod_finetune_glm_desc", "category": "core"},
     {"key": "research_assistant", "title_key": "mod_research_title", "desc_key": "mod_research_desc", "category": "knowledge"},

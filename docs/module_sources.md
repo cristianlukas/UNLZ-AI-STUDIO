@@ -1,11 +1,12 @@
 # Modulos y fuentes
 
 Este documento lista los modulos disponibles y de donde se obtuvieron sus nombres.
-No se uso informacion externa.
+Se usa informacion externa solo cuando se indica explicitamente.
 
 Fuentes:
 - Lista de modulos: `system/studio_gui.py` (diccionario `available_modules`).
 - Nombres visibles: `system/assets/languages.json` (claves `mod_*_title`).
+- Fuente externa puntual: publicacion Reddit de Scenema Audio.
 
 Modulos:
 - monitor -> Endpoints de IA (source: `system/assets/languages.json`, key `mod_monitor_title`)
@@ -22,3 +23,4 @@ Modulos:
 - hy_motion -> HY-Motion 1.0 (source: `system/assets/languages.json`, key `mod_hymotion_title`)
 - neutts -> NeuTTS (source: `system/assets/languages.json`, key `mod_neutts_title`)
 - proedit -> ProEdit (source: `system/assets/languages.json`, key `mod_proedit_title`)
+- scenema_audio -> Scenema Audio (source: Reddit `https://www.reddit.com/r/StableDiffusion/comments/1tbzgi3/scenema_audio_zeroshot_expressive_voice_cloning/`)
