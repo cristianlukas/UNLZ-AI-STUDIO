@@ -50,6 +50,7 @@ from modules.hyworld import HYWorldModule
 from modules.cyberscraper import CyberScraperModule
 from modules.ml_sharp import MLSharpModule
 from modules.img2threejs import Img2ThreeJSModule
+from modules.corridorkey import CorridorKeyModule
 
 # Set Theme
 THEME_PATH = os.path.join(os.path.dirname(__file__), "assets", "themes", "ingenieria.json")
@@ -259,6 +260,12 @@ class StudioGUI(ctk.CTk):
                 "title_key": "mod_img2threejs_title",
                 "desc_key": "mod_img2threejs_desc",
                 "icon": "I3"
+            },
+            "corridorkey": {
+                "class": CorridorKeyModule,
+                "title_key": "mod_corridorkey_title",
+                "desc_key": "mod_corridorkey_desc",
+                "icon": "CK"
             },
             "llm_frontend": {
                 "class": LLMFrontendModule,

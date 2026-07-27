@@ -219,6 +219,25 @@ export const MODULE_DOCS: Record<string, ModuleDoc> = {
       "Ejecutar y abrir la salida.",
     ],
   },
+  corridorkey: {
+    title: "CorridorKey",
+    summary: "Keying neural de pantalla verde o azul con alpha lineal y conservación de transparencias.",
+    what_is: "Un backend externo de Corridor Digital para separar foreground, matte y color despilleado en material VFX.",
+    purpose: "Obtener recortes de alta calidad en cabello, desenfoque de movimiento y bordes semitransparentes.",
+    use_cases: [
+      "Prácticas de composición y efectos visuales.",
+      "Extracción de sujetos filmados sobre chroma.",
+      "Generación de matte y foreground EXR.",
+      "Comparación entre keying tradicional y modelos neuronales.",
+    ],
+    how_to: [
+      "Instalar el backend oficial y preparar su entorno aislado.",
+      "Elegir un video o secuencia y su Alpha Hint aproximado.",
+      "Configurar pantalla, espacio de color y resolución.",
+      "Ejecutar el proceso y seguir el avance en los logs.",
+      "Abrir las carpetas FG, Matte, Processed y Comp del trabajo.",
+    ],
+  },
   proedit: {
     title: "ProEdit",
     summary:

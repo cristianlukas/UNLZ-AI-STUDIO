@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 import importlib.metadata
+import importlib.util
 import webbrowser
 from shutil import which
 from pathlib import Path
@@ -59,6 +60,7 @@ AVAILABLE_MODULES = [
     {"key": "ml_sharp", "title_key": "mod_mlsharp_title", "desc_key": "mod_mlsharp_desc", "category": "vision"},
     {"key": "model_3d", "title_key": "mod_model3d_title", "desc_key": "mod_model3d_desc", "category": "vision"},
     {"key": "img2threejs", "title_key": "mod_img2threejs_title", "desc_key": "mod_img2threejs_desc", "category": "vision"},
+    {"key": "corridorkey", "title_key": "mod_corridorkey_title", "desc_key": "mod_corridorkey_desc", "category": "vision"},
     {"key": "spotedit", "title_key": "mod_spotedit_title", "desc_key": "mod_spotedit_desc", "category": "vision"},
     {"key": "hy_motion", "title_key": "mod_hymotion_title", "desc_key": "mod_hymotion_desc", "category": "motion"},
     {"key": "proedit", "title_key": "mod_proedit_title", "desc_key": "mod_proedit_desc", "category": "vision"},
@@ -119,6 +121,9 @@ SPOTEDIT_DATA_DIR = BASE_DIR / "data" / "spotedit"
 SPOTEDIT_OUTPUT_DIR = BASE_DIR / "spotedit-out"
 IMG2THREEJS_BACKEND_DIR = BASE_DIR / "ai-backends" / "img2threejs"
 IMG2THREEJS_OUTPUT_DIR = BASE_DIR / "img2threejs-out"
+CORRIDORKEY_BACKEND_DIR = BASE_DIR / "ai-backends" / "CorridorKey"
+CORRIDORKEY_RUNNER_PATH = BASE_DIR / "modules" / "corridorkey" / "runner.py"
+CORRIDORKEY_OUTPUT_DIR = BASE_DIR / "corridorkey-out"
 
 HYWORLD_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 KLEIN_DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -1592,6 +1597,25 @@ class HYWorldRun(BaseModel):
     output_dir: str | None = None
 
 
+class CorridorKeyDeps(BaseModel):
+    device: str = "cuda"
+
+
+class CorridorKeyRun(BaseModel):
+    input_path: str
+    alpha_path: str
+    job_name: str = "shot"
+    device: str = "auto"
+    screen_color: str = "auto"
+    colorspace: str = "srgb"
+    image_size: int = 2048
+    despill: int = 5
+    despeckle_size: int = 400
+    refiner: float = 1.0
+    despeckle: bool = True
+    skip_existing: bool = False
+
+
 class Img2ThreeJSRun(BaseModel):
     input_path: str
     name: str | None = None
@@ -2245,6 +2269,118 @@ def hyworld_state():
         "output_dir": str(HYWORLD_OUTPUT_DIR),
         "running": _is_running("hyworld"),
     }
+
+
+@app.get("/modules/corridorkey/state")
+def corridorkey_state():
+    ready = (CORRIDORKEY_BACKEND_DIR / ".venv").exists()
+    return {
+        "installed": (CORRIDORKEY_BACKEND_DIR / "corridorkey_cli.py").exists(),
+        "deps_installed": ready,
+        "running": _is_running("corridorkey"),
+        "backend_dir": str(CORRIDORKEY_BACKEND_DIR),
+        "output_dir": str(CORRIDORKEY_OUTPUT_DIR),
+        "uv_available": which("uv") is not None or importlib.util.find_spec("uv") is not None,
+    }
+
+
+@app.post("/modules/corridorkey/install")
+def corridorkey_install():
+    if _is_running("corridorkey"):
+        raise HTTPException(status_code=409, detail="CorridorKey is already running")
+    if CORRIDORKEY_BACKEND_DIR.exists():
+        raise HTTPException(status_code=409, detail="Backend directory already exists")
+    if which("git") is None:
+        raise HTTPException(status_code=400, detail="Git is not available")
+    CORRIDORKEY_BACKEND_DIR.parent.mkdir(parents=True, exist_ok=True)
+    _run_cmd(
+        "corridorkey",
+        ["git", "clone", "--depth", "1", "https://github.com/nikopueringer/CorridorKey", str(CORRIDORKEY_BACKEND_DIR)],
+        cwd=CORRIDORKEY_BACKEND_DIR.parent,
+    )
+    return {"ok": True}
+
+
+@app.post("/modules/corridorkey/deps")
+def corridorkey_deps(payload: CorridorKeyDeps):
+    if _is_running("corridorkey"):
+        raise HTTPException(status_code=409, detail="CorridorKey is already running")
+    if not (CORRIDORKEY_BACKEND_DIR / "pyproject.toml").exists():
+        raise HTTPException(status_code=404, detail="Backend not installed")
+    python_path = sys.executable.replace("pythonw.exe", "python.exe")
+    sync_cmd = [python_path, "-m", "uv", "sync"]
+    if payload.device in ("auto", "cuda"):
+        sync_cmd.extend(["--extra", "cuda"])
+    _run_cmd_chain(
+        "corridorkey",
+        [
+            [python_path, "-m", "pip", "install", "-U", "uv"],
+            sync_cmd,
+        ],
+        cwd=CORRIDORKEY_BACKEND_DIR,
+    )
+    return {"ok": True}
+
+
+@app.post("/modules/corridorkey/run")
+def corridorkey_run(payload: CorridorKeyRun):
+    if _is_running("corridorkey"):
+        raise HTTPException(status_code=409, detail="CorridorKey is already running")
+    if not (CORRIDORKEY_BACKEND_DIR / ".venv").exists():
+        raise HTTPException(status_code=404, detail="CorridorKey dependencies are not installed")
+    input_path = Path(payload.input_path).expanduser()
+    alpha_path = Path(payload.alpha_path).expanduser()
+    if not input_path.exists() or not alpha_path.exists():
+        raise HTTPException(status_code=400, detail="Input or Alpha Hint path not found")
+    if payload.device not in ("auto", "cuda", "cpu", "mps"):
+        raise HTTPException(status_code=400, detail="Invalid device")
+    if payload.screen_color not in ("auto", "green", "blue"):
+        raise HTTPException(status_code=400, detail="Invalid screen color")
+    if payload.colorspace not in ("srgb", "linear"):
+        raise HTTPException(status_code=400, detail="Invalid colorspace")
+    if payload.image_size not in (512, 1024, 2048):
+        raise HTTPException(status_code=400, detail="Invalid image size")
+    cmd = [
+        sys.executable.replace("pythonw.exe", "python.exe"), "-u", str(CORRIDORKEY_RUNNER_PATH),
+        "--backend", str(CORRIDORKEY_BACKEND_DIR),
+        "--input", str(input_path),
+        "--alpha", str(alpha_path),
+        "--job", payload.job_name,
+        "--device", payload.device,
+        "--screen-color", payload.screen_color,
+        "--colorspace", payload.colorspace,
+        "--image-size", str(payload.image_size),
+        "--despill", str(payload.despill),
+        "--despeckle-size", str(payload.despeckle_size),
+        "--refiner", str(payload.refiner),
+    ]
+    if not payload.despeckle:
+        cmd.append("--no-despeckle")
+    if payload.skip_existing:
+        cmd.append("--skip-existing")
+    _run_cmd("corridorkey", cmd, cwd=CORRIDORKEY_BACKEND_DIR)
+    return {"ok": True}
+
+
+@app.post("/modules/corridorkey/stop")
+def corridorkey_stop():
+    _stop_proc("corridorkey")
+    return {"ok": True}
+
+
+@app.post("/modules/corridorkey/open_output")
+def corridorkey_open_output(payload: GaussianScene):
+    target = CORRIDORKEY_OUTPUT_DIR / re.sub(
+        r"[^A-Za-z0-9_-]+", "_", payload.path
+    ).strip("_")
+    target.mkdir(parents=True, exist_ok=True)
+    os.startfile(str(target))
+    return {"ok": True}
+
+
+@app.get("/modules/corridorkey/logs")
+def corridorkey_logs(lines: int = 200):
+    return {"lines": _tail_log("corridorkey", lines)}
 
 
 @app.get("/modules/img2threejs/state")

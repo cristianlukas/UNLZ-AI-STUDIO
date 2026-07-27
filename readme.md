@@ -235,6 +235,14 @@ Los módulos se instalan desde la GUI o la Web UI. Código en `system/modules/`.
 - Funcionamiento: clona repo, instala deps y ejecuta pipeline.
 - Uso en la app: instalar, descargar weights y correr generación.
 
+### CorridorKey
+- Autor original: Corridor Digital (`https://github.com/nikopueringer/CorridorKey`).
+- Licencia: CC BY-NC-SA 4.0 con términos adicionales; UNLZ AI Studio descarga el backend oficial y no lo redistribuye.
+- Descripción: keying neural de pantalla verde o azul con foreground reconstruido y alpha lineal.
+- Funcionamiento: prepara la estructura `Input/AlphaHint`, ejecuta la CLI oficial en un entorno `uv` aislado y produce FG, Matte, Processed y Comp.
+- Uso en la app: instalar backend, preparar el entorno, elegir video o secuencia y Alpha Hint, configurar pantalla/color/resolución y procesar.
+- Requisitos: Python administrado por `uv`; para aceleración NVIDIA nativa en Windows, drivers compatibles con CUDA 12.8 o superior.
+
 ### NeuTTS
 - Autor original: Neuphonic (`https://github.com/neuphonic/neutts`).
 - Descripción: texto a voz con variantes Air/Nano.
