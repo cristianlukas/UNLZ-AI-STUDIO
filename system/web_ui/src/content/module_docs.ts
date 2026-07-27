@@ -8,6 +8,28 @@ export type ModuleDoc = {
 };
 
 export const MODULE_DOCS: Record<string, ModuleDoc> = {
+  img2threejs: {
+    title: "img2threejs",
+    summary:
+      "Reconstruccion de objetos como codigo procedural Three.js mediante un pipeline por etapas y controles de calidad.",
+    what_is:
+      "Una skill de codigo abierto que transforma una imagen de referencia en una especificacion JSON y una fabrica TypeScript que devuelve un THREE.Group.",
+    purpose:
+      "Crear activos 3D editables, versionables y preparados para animacion sin depender de una malla binaria generada como caja negra.",
+    use_cases: [
+      "Prototipos de objetos 3D para clases y videojuegos.",
+      "Estudio de geometria procedural y materiales PBR.",
+      "Generacion de modelos Three.js editables desde una referencia.",
+      "Comparacion iterativa entre referencia y render.",
+    ],
+    how_to: [
+      "Instalar el backend desde el modulo.",
+      "Indicar la ruta local de una imagen y un nombre para el objeto.",
+      "Elegir la carpeta de salida y generar el proyecto base.",
+      "Revisar assessment.json, spec.json y createObjectModel.ts.",
+      "Continuar los pases con un agente visual compatible hasta superar los controles de calidad.",
+    ],
+  },
   monitor: {
     title: "Endpoints de IA",
     summary:

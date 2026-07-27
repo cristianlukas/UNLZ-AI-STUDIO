@@ -58,6 +58,7 @@ AVAILABLE_MODULES = [
     {"key": "inclu_ia", "title_key": "mod_incluia_title", "desc_key": "mod_incluia_desc", "category": "core"},
     {"key": "ml_sharp", "title_key": "mod_mlsharp_title", "desc_key": "mod_mlsharp_desc", "category": "vision"},
     {"key": "model_3d", "title_key": "mod_model3d_title", "desc_key": "mod_model3d_desc", "category": "vision"},
+    {"key": "img2threejs", "title_key": "mod_img2threejs_title", "desc_key": "mod_img2threejs_desc", "category": "vision"},
     {"key": "spotedit", "title_key": "mod_spotedit_title", "desc_key": "mod_spotedit_desc", "category": "vision"},
     {"key": "hy_motion", "title_key": "mod_hymotion_title", "desc_key": "mod_hymotion_desc", "category": "motion"},
     {"key": "proedit", "title_key": "mod_proedit_title", "desc_key": "mod_proedit_desc", "category": "vision"},
@@ -116,6 +117,8 @@ RESEARCH_INDEX_PATH = RESEARCH_DATA_DIR / "index.json"
 SPOTEDIT_BACKEND_DIR = BASE_DIR / "ai-backends" / "SpotEdit"
 SPOTEDIT_DATA_DIR = BASE_DIR / "data" / "spotedit"
 SPOTEDIT_OUTPUT_DIR = BASE_DIR / "spotedit-out"
+IMG2THREEJS_BACKEND_DIR = BASE_DIR / "ai-backends" / "img2threejs"
+IMG2THREEJS_OUTPUT_DIR = BASE_DIR / "img2threejs-out"
 
 HYWORLD_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 KLEIN_DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -133,6 +136,7 @@ FINETUNE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 RESEARCH_DOCS_DIR.mkdir(parents=True, exist_ok=True)
 SPOTEDIT_DATA_DIR.mkdir(parents=True, exist_ok=True)
 SPOTEDIT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+IMG2THREEJS_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _log_path(name: str) -> Path:
@@ -1588,6 +1592,12 @@ class HYWorldRun(BaseModel):
     output_dir: str | None = None
 
 
+class Img2ThreeJSRun(BaseModel):
+    input_path: str
+    name: str | None = None
+    output_dir: str | None = None
+
+
 class IncluIAStart(BaseModel):
     model: str = "tiny"
     port: int = 5000
@@ -2235,6 +2245,76 @@ def hyworld_state():
         "output_dir": str(HYWORLD_OUTPUT_DIR),
         "running": _is_running("hyworld"),
     }
+
+
+@app.get("/modules/img2threejs/state")
+def img2threejs_state():
+    return {
+        "installed": (IMG2THREEJS_BACKEND_DIR / "SKILL.md").exists(),
+        "backend_dir": str(IMG2THREEJS_BACKEND_DIR),
+        "output_dir": str(IMG2THREEJS_OUTPUT_DIR),
+        "running": _is_running("img2threejs"),
+    }
+
+
+@app.post("/modules/img2threejs/install")
+def img2threejs_install():
+    if IMG2THREEJS_BACKEND_DIR.exists():
+        raise HTTPException(status_code=409, detail="Backend directory already exists")
+    IMG2THREEJS_BACKEND_DIR.parent.mkdir(parents=True, exist_ok=True)
+    _run_cmd(
+        "img2threejs",
+        ["git", "clone", "--depth", "1", "https://github.com/img2threejs/img2threejs", str(IMG2THREEJS_BACKEND_DIR)],
+        cwd=IMG2THREEJS_BACKEND_DIR.parent,
+    )
+    return {"ok": True}
+
+
+@app.post("/modules/img2threejs/update")
+def img2threejs_update():
+    if not (IMG2THREEJS_BACKEND_DIR / ".git").exists():
+        raise HTTPException(status_code=404, detail="Backend not installed")
+    _run_cmd("img2threejs", ["git", "pull", "--ff-only"], cwd=IMG2THREEJS_BACKEND_DIR)
+    return {"ok": True}
+
+
+@app.post("/modules/img2threejs/run")
+def img2threejs_run(payload: Img2ThreeJSRun):
+    if not (IMG2THREEJS_BACKEND_DIR / "SKILL.md").exists():
+        raise HTTPException(status_code=404, detail="Backend not installed")
+    image = Path(payload.input_path).expanduser().resolve()
+    if not image.is_file():
+        raise HTTPException(status_code=400, detail="Input image not found")
+    name = (payload.name or image.stem).strip()
+    safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", name).strip("_") or "object"
+    base_output = Path(payload.output_dir).expanduser().resolve() if payload.output_dir else IMG2THREEJS_OUTPUT_DIR
+    project = base_output / safe_name
+    project.mkdir(parents=True, exist_ok=True)
+    reference = project / f"reference{image.suffix.lower()}"
+    shutil.copy2(image, reference)
+    python_path = sys.executable.replace("pythonw.exe", "python.exe")
+    commands = [
+        [python_path, "forge/stage1_intake/probe_image.py", str(reference)],
+        [python_path, "forge/stage2_spec/new_pre_spec_assessment.py", name, "--image", str(reference), "--out", str(project / "assessment.json"), "--force"],
+        [python_path, "forge/stage2_spec/new_sculpt_spec.py", name, "--image", str(reference), "--assessment", str(project / "assessment.json"), "--out", str(project / "spec.json"), "--force"],
+        [python_path, "forge/stage2_spec/validate_sculpt_spec.py", str(project / "spec.json")],
+        [python_path, "forge/stage3_build/generate_threejs_factory.py", str(project / "spec.json"), "--out", str(project / "createObjectModel.ts"), "--force"],
+    ]
+    _run_cmd_chain("img2threejs", commands, cwd=IMG2THREEJS_BACKEND_DIR)
+    return {"ok": True, "project_dir": str(project)}
+
+
+@app.post("/modules/img2threejs/open_output")
+def img2threejs_open(payload: GaussianScene):
+    target = Path(payload.path or str(IMG2THREEJS_OUTPUT_DIR)).expanduser().resolve()
+    target.mkdir(parents=True, exist_ok=True)
+    os.startfile(str(target))
+    return {"ok": True}
+
+
+@app.get("/modules/img2threejs/logs")
+def img2threejs_logs(lines: int = 200):
+    return {"lines": _tail_log("img2threejs", lines)}
 
 
 @app.post("/modules/hyworld/install")

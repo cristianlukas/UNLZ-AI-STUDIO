@@ -173,6 +173,14 @@ Los módulos se instalan desde la GUI o la Web UI. Código en `system/modules/`.
 - Uso en la app: instalar dependencias, elegir input/salida, correr inferencia, gestionar escenas (library) y abrir visor.
 - Extra (SharpSplat): descarga automática del modelo `sharp_2572gikvuh.pt` y setup del viewer (`gaussians/index.html`).
 
+### img2threejs
+- Autor original: img2threejs (`https://github.com/img2threejs/img2threejs`).
+- Licencia: Apache-2.0.
+- Descripción: reconstrucción de una imagen como modelo procedural Three.js, con especificación y controles de calidad por etapas.
+- Funcionamiento: instala el repositorio oficial, prepara el proyecto, genera la evaluación y especificación base, valida y emite una fábrica TypeScript.
+- Uso en la app: instalar el backend, elegir imagen/nombre/salida y ejecutar desde la GUI de escritorio o la Web UI.
+- Limitación: una sola imagen no revela las caras ocultas; la salida final requiere el ciclo de revisión visual de un agente compatible.
+
 ### LLM Frontend (Chat & Manager)
 - Autor original: UNLZ AI Studio.
 - Descripción: chat local con modelos GGUF + gestor de modelos.
